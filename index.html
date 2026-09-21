@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Flappy Deluxe v24</title>
+  <title>Flappy Deluxe v25</title>
   <style>
     html, body {
       margin: 0;
@@ -46,14 +46,18 @@
       }
     }
     /* -------------------- LEADERBOARD UI --------------------
-     * A trophy button (top-right) opens the leaderboard. A separate modal
-     * auto-pops after a run ends so the player can submit their score.
-     * Both are plain fixed-position DOM overlays (NOT drawn on the
-     * canvas), which keeps them simple, readable at any canvas scale, and
-     * immune to the blur/scaling issues fixed for the in-canvas sprites.
+     * A trophy button opens the leaderboard. Score submission is now
+     * fully AUTOMATIC (no per-run modal/button) - the only manual step
+     * left is a ONE-TIME name entry so the leaderboard has something to
+     * label each row with. That name is remembered locally forever after.
+     *
+     * position: FIXED (not absolute) so the button is guaranteed to stay
+     * pinned to the actual browser viewport's top-right corner - it does
+     * not drift if the canvas itself is smaller/centered/letterboxed
+     * (e.g. on a wide PC window).
      */
     #leaderboardBtn {
-      position: absolute;
+      position: fixed;
       top: 9px;
       right: 9px;
       border: 0;
@@ -87,7 +91,7 @@
     }
     .modal-title { font-size: 20px; font-weight: bold; margin-bottom: 10px; }
     .modal-score { font-size: 16px; margin-bottom: 14px; color: #ffce29; }
-    #nameInput {
+    .modal-input {
       width: 100%;
       box-sizing: border-box;
       padding: 9px 10px;
@@ -97,21 +101,6 @@
       color: #fff;
       font-size: 15px;
       margin-bottom: 12px;
-    }
-    /* Shown instead of the input once a name is already remembered, so
-       returning players don't have to retype it every run. */
-    #savedNameRow {
-      display: none;
-      font-size: 14px;
-      margin-bottom: 12px;
-      color: #cfe8ff;
-    }
-    #savedNameRow b { color: #fff; }
-    #changeNameLink {
-      color: #8ab4ff;
-      text-decoration: underline;
-      cursor: pointer;
-      margin-left: 6px;
     }
     .modal-btn-row { display: flex; gap: 8px; }
     .modal-btn-row button {
@@ -123,9 +112,8 @@
       font-weight: 600;
       cursor: pointer;
     }
-    #submitScoreBtn { background: #e2001a; color: #fff; }
-    #submitScoreBtn:disabled { opacity: 0.6; cursor: default; }
-    #skipScoreBtn { background: #333c50; color: #fff; }
+    .modal-btn-primary { background: #e2001a; color: #fff; }
+    .modal-btn-primary:disabled { opacity: 0.6; cursor: default; }
     #closeLeaderboardBtn {
       background: #333c50;
       color: #fff;
@@ -142,6 +130,39 @@
     .modal-list { text-align: left; max-height: 260px; overflow-y: auto; margin: 12px 0; font-size: 14px; }
     .lb-row { display: flex; justify-content: space-between; padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
     .lb-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+    /* "Playing as: X (change)" strip shown inside the leaderboard modal. */
+    #leaderboardNameRow {
+      font-size: 13px;
+      color: #cfe8ff;
+      text-align: left;
+      margin-bottom: 8px;
+    }
+    #leaderboardNameRow b { color: #fff; }
+    #lbChangeNameLink {
+      color: #8ab4ff;
+      text-decoration: underline;
+      cursor: pointer;
+      margin-left: 6px;
+    }
+    /* Small non-blocking toast used to silently confirm/flag automatic
+       background score submissions, without requiring any interaction. */
+    #toast {
+      position: fixed;
+      bottom: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.78);
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 20px;
+      font-size: 13px;
+      z-index: 60;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+      white-space: nowrap;
+    }
+    #toast.show { opacity: 1; }
   </style>
 </head>
 <body>
@@ -149,32 +170,39 @@
     <canvas id="c" width="320" height="480"></canvas>
     <button id="leaderboardBtn">&#127942;</button>
   </div>
-  <!-- Auto-opens after a run ends (score > 0): submit to the shared
-       Supabase leaderboard. If a name is already remembered, the input
-       is hidden and replaced with a quick confirmation line instead. -->
-  <div id="scoreModal" class="modal-backdrop">
+
+  <!-- ONE-TIME onboarding step: only ever shown if no name is saved yet
+       (brand new device), or when the player taps "change" inside the
+       leaderboard view. This is the ONLY manual step in the whole flow -
+       every actual score submission afterwards happens automatically in
+       the background with no prompt at all. -->
+  <div id="nameModal" class="modal-backdrop">
     <div class="modal-box">
-      <div id="scoreModalTitle" class="modal-title">Game Over!</div>
-      <div id="scoreModalScore" class="modal-score"></div>
-      <div id="savedNameRow">Submitting as <b id="savedNameText"></b><span id="changeNameLink">change</span></div>
-      <input id="nameInput" type="text" maxlength="20" placeholder="Your name" autocomplete="off" />
+      <div class="modal-title">Welcome!</div>
+      <div class="modal-score">Enter a name for the leaderboard</div>
+      <input id="nameModalInput" class="modal-input" type="text" maxlength="20" placeholder="Your name" autocomplete="off" />
       <div class="modal-btn-row">
-        <button id="submitScoreBtn">Submit Score</button>
-        <button id="skipScoreBtn">Skip</button>
+        <button id="nameModalSaveBtn" class="modal-btn-primary">Save</button>
       </div>
-      <div id="submitStatus" class="modal-status"></div>
+      <div id="nameModalStatus" class="modal-status"></div>
     </div>
   </div>
+
   <!-- Opened via the trophy button - shows the top scores from everyone
        who has submitted to this same shared leaderboard, deduped so each
-       person's HIGHEST score is the only one shown. -->
+       person's HIGHEST score is the only one shown (Supabase itself still
+       keeps every individual run/score ever submitted). -->
   <div id="leaderboardModal" class="modal-backdrop">
     <div class="modal-box">
       <div class="modal-title">&#127942; Leaderboard</div>
+      <div id="leaderboardNameRow">Playing as <b id="leaderboardNameText"></b><span id="lbChangeNameLink">change</span></div>
       <div id="leaderboardList" class="modal-list">Loading...</div>
       <button id="closeLeaderboardBtn">Close</button>
     </div>
   </div>
+
+  <div id="toast"></div>
+
   <script>
     const cv = document.getElementById('c');
     const q = cv.getContext('2d');
@@ -231,8 +259,7 @@
      * Supabase gives every project a free hosted Postgres database with
      * an auto-generated REST API - reachable with plain fetch() calls,
      * no SDK/script tag needed, keeping this a single self-contained
-     * HTML file. Swapped in after CheddaBoards.com got flagged by the
-     * office's Zscaler web filter as "Miscellaneous/Unknown."
+     * HTML file.
      *
      * NOTE: the "anon public" / "publishable" key below is SAFE to embed
      * in client-side code and share - it can only do what your Row Level
@@ -243,6 +270,11 @@
     const SUPABASE_URL = 'https://zcikcybrulwhbclsjjhb.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_3bdAzSXPbVeS6w0MD_S2sA_GapTsNB5';
 
+    // Every call is a plain INSERT (never an update/upsert) - so Supabase
+    // keeps a full history of every single run ever submitted, for every
+    // name, forever. The leaderboard VIEW below is what narrows that
+    // full history down to "only show each person's best" - the
+    // underlying data is never trimmed or overwritten.
     async function submitScoreToSupabase(nickname, scoreValue) {
       try {
         const res = await fetch(SUPABASE_URL + '/rest/v1/scores', {
@@ -272,7 +304,9 @@
          * and then dedupe client-side: since the rows arrive in
          * descending score order, the FIRST time we encounter a given
          * name is automatically that person's highest score. Every
-         * later (lower) row for that same name is simply skipped.
+         * later (lower) row for that same name is simply skipped for
+         * DISPLAY purposes only - all of those rows still permanently
+         * exist in the underlying Supabase table.
          * Names are compared trimmed + lowercased so "Peter" and "peter "
          * are treated as the same person.
          */
@@ -301,135 +335,84 @@
       }
     }
 
-    // ---- DOM wiring for the two modals ----
-    const leaderboardBtn = document.getElementById('leaderboardBtn');
-    const scoreModal = document.getElementById('scoreModal');
-    const scoreModalScore = document.getElementById('scoreModalScore');
-    const nameInput = document.getElementById('nameInput');
-    const submitScoreBtn = document.getElementById('submitScoreBtn');
-    const skipScoreBtn = document.getElementById('skipScoreBtn');
-    const submitStatus = document.getElementById('submitStatus');
-    const leaderboardModal = document.getElementById('leaderboardModal');
-    const leaderboardList = document.getElementById('leaderboardList');
-    const closeLeaderboardBtn = document.getElementById('closeLeaderboardBtn');
-    const scoreModalTitle = document.getElementById('scoreModalTitle');
-    const savedNameRow = document.getElementById('savedNameRow');
-    const savedNameText = document.getElementById('savedNameText');
-    const changeNameLink = document.getElementById('changeNameLink');
-
-    nameInput.value = localStorage.flappyName || '';
-
-    /* -------------------- REMEMBERED NAME UX --------------------
-     * If a name was saved from a previous submission, hide the text input
-     * entirely and show a compact "Submitting as <name>" confirmation
-     * instead - so returning players never have to retype it. A small
-     * "change" link swaps back to the editable input for anyone who
-     * wants to submit under a different name (e.g. testing, or someone
-     * else playing on the same device).
+    /* -------------------- TOAST (non-blocking status) --------------------
+     * Purely informational - confirms an automatic background submission
+     * succeeded or failed, WITHOUT requiring any tap/click. Auto-hides.
      */
-    function refreshNameRowUI() {
-      const saved = localStorage.flappyName;
-      if (saved) {
-        savedNameText.textContent = saved;
-        savedNameRow.style.display = 'block';
-        nameInput.style.display = 'none';
-      } else {
-        savedNameRow.style.display = 'none';
-        nameInput.style.display = 'block';
-      }
-    }
-    changeNameLink.onclick = (e) => {
-      e.stopPropagation();
-      savedNameRow.style.display = 'none';
-      nameInput.style.display = 'block';
-      nameInput.value = localStorage.flappyName || '';
-      nameInput.focus();
-    };
-    refreshNameRowUI();
-
-    // Tracks WHICH score the currently-open modal should submit, since the
-    // same modal/buttons are reused for two different situations below.
-    let pendingScoreToSubmit = 0;
-    // True only while the one-time "submit your existing best" prompt
-    // (added for the leaderboard rollout) is showing, so we know to mark
-    // it as handled once the player submits or skips it.
-    let isExistingBestPrompt = false;
-
-    function openScoreModal(finalScore) {
-      isExistingBestPrompt = false;
-      pendingScoreToSubmit = finalScore;
-      scoreModalTitle.textContent = 'Game Over!';
-      scoreModalScore.textContent = 'You scored ' + finalScore + '!';
-      submitStatus.textContent = '';
-      submitScoreBtn.disabled = false;
-      submitScoreBtn.textContent = 'Submit Score';
-      refreshNameRowUI();
-      scoreModal.style.display = 'flex';
-    }
-    function closeScoreModal() { scoreModal.style.display = 'none'; }
-
-    /* -------------------- ONE-TIME "SUBMIT EXISTING BEST" PROMPT --------------------
-     * Anyone updating from a pre-leaderboard version of the file already
-     * has a personal best sitting in localStorage that would otherwise
-     * never reach the shared board unless they happened to beat it again.
-     * On first load of THIS version, if a best score exists and hasn't
-     * been offered up yet, we prompt once to submit it - so nobody loses
-     * credit for scores they already earned. Skipping or submitting both
-     * mark it as handled (localStorage.flappyBestPrompted) so this only
-     * ever appears a single time per device.
-     */
-    function maybePromptExistingBest() {
-      if (localStorage.flappyBestPrompted) return;
-      if (!best || best <= 0) return;
-      isExistingBestPrompt = true;
-      pendingScoreToSubmit = best;
-      scoreModalTitle.textContent = 'Welcome to the leaderboard!';
-      scoreModalScore.textContent = 'Your existing best is ' + best + ' - submit it?';
-      submitStatus.textContent = '';
-      submitScoreBtn.disabled = false;
-      submitScoreBtn.textContent = 'Submit Score';
-      refreshNameRowUI();
-      scoreModal.style.display = 'flex';
+    const toastEl = document.getElementById('toast');
+    let toastTimer = null;
+    function showToast(msg) {
+      toastEl.textContent = msg;
+      toastEl.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
     }
 
-    function getNameToSubmit() {
-      // Prefer whatever is currently typed in the input if it's visible
-      // and non-empty; otherwise fall back to the remembered name shown
-      // in the "Submitting as X" confirmation row.
-      const typed = nameInput.value.trim();
-      if (nameInput.style.display !== 'none' && typed) return typed;
+    /* -------------------- NAME (ONE-TIME ONLY) + AUTOMATIC SUBMISSION -------------------- */
+    const nameModal = document.getElementById('nameModal');
+    const nameModalInput = document.getElementById('nameModalInput');
+    const nameModalSaveBtn = document.getElementById('nameModalSaveBtn');
+    const nameModalStatus = document.getElementById('nameModalStatus');
+
+    function currentName() {
       return (localStorage.flappyName || '').trim();
     }
 
-    submitScoreBtn.onclick = async (e) => {
+    let onNameSaved = null; // optional one-shot callback after a fresh save
+    function openNameModal(afterSaveCallback) {
+      onNameSaved = afterSaveCallback || null;
+      nameModalInput.value = currentName();
+      nameModalStatus.textContent = '';
+      nameModalSaveBtn.disabled = false;
+      nameModalSaveBtn.textContent = 'Save';
+      nameModal.style.display = 'flex';
+      nameModalInput.focus();
+    }
+    function closeNameModal() { nameModal.style.display = 'none'; }
+
+    nameModalSaveBtn.onclick = (e) => {
       e.stopPropagation();
-      const nm = getNameToSubmit();
+      const nm = nameModalInput.value.trim();
       if (nm.length < 2) {
-        submitStatus.textContent = 'Enter a name (2+ characters).';
+        nameModalStatus.textContent = 'Enter a name (2+ characters).';
         return;
       }
       localStorage.flappyName = nm;
-      submitScoreBtn.disabled = true;
-      submitScoreBtn.textContent = 'Submitting...';
-      const ok = await submitScoreToSupabase(nm, pendingScoreToSubmit);
-      if (ok) {
-        submitStatus.textContent = 'Submitted!';
-        if (isExistingBestPrompt) localStorage.flappyBestPrompted = '1';
-        setTimeout(closeScoreModal, 700);
-      } else {
-        submitStatus.textContent = 'Could not submit - check connection.';
-        submitScoreBtn.disabled = false;
-        submitScoreBtn.textContent = 'Retry';
-      }
+      closeNameModal();
+      updateLeaderboardNameRow();
+      if (onNameSaved) { const cb = onNameSaved; onNameSaved = null; cb(); }
     };
-    skipScoreBtn.onclick = (e) => {
+
+    // Fires automatically in the background - no modal, no button, no
+    // interaction required. Every call is a brand new row in Supabase
+    // (full history per name is always preserved there).
+    function silentSubmit(scoreValue) {
+      const nm = currentName();
+      if (!nm) return;
+      submitScoreToSupabase(nm, scoreValue).then((ok) => {
+        showToast(ok ? ('Score submitted: ' + scoreValue) : 'Could not submit score');
+      });
+    }
+
+    // ---- Leaderboard modal wiring ----
+    const leaderboardBtn = document.getElementById('leaderboardBtn');
+    const leaderboardModal = document.getElementById('leaderboardModal');
+    const leaderboardList = document.getElementById('leaderboardList');
+    const closeLeaderboardBtn = document.getElementById('closeLeaderboardBtn');
+    const leaderboardNameText = document.getElementById('leaderboardNameText');
+    const lbChangeNameLink = document.getElementById('lbChangeNameLink');
+
+    function updateLeaderboardNameRow() {
+      leaderboardNameText.textContent = currentName() || '(no name set)';
+    }
+    lbChangeNameLink.onclick = (e) => {
       e.stopPropagation();
-      if (isExistingBestPrompt) localStorage.flappyBestPrompted = '1';
-      closeScoreModal();
+      openNameModal(() => updateLeaderboardNameRow());
     };
 
     leaderboardBtn.onclick = async (e) => {
       e.stopPropagation();
+      updateLeaderboardNameRow();
       leaderboardList.textContent = 'Loading...';
       leaderboardModal.style.display = 'flex';
       const entries = await fetchLeaderboard();
@@ -447,6 +430,32 @@
       ).join('');
     };
     closeLeaderboardBtn.onclick = (e) => { e.stopPropagation(); leaderboardModal.style.display = 'none'; };
+
+    /* -------------------- STARTUP: one-time name capture + migrate existing best --------------------
+     * - Brand new device (no name saved yet): show the ONE-TIME name
+     *   modal. Once saved, if a pre-existing local best score is sitting
+     *   in localStorage (e.g. from playing an older version before the
+     *   leaderboard existed), silently submit it automatically.
+     * - Returning device that already has a name saved: skip the modal
+     *   entirely. If a local best hasn't been migrated to the leaderboard
+     *   yet, submit it automatically in the background right away.
+     * - Every subsequent game-over submission (in die() below) is fully
+     *   automatic from this point on - no modal ever appears again.
+     */
+    function migrateExistingBestIfNeeded() {
+      if (best > 0 && !localStorage.flappyBestPrompted) {
+        localStorage.flappyBestPrompted = '1';
+        silentSubmit(best);
+      }
+    }
+    setTimeout(() => {
+      if (!currentName()) {
+        openNameModal(() => migrateExistingBestIfNeeded());
+      } else {
+        migrateExistingBestIfNeeded();
+      }
+    }, 600);
+
     /* -------------------- AUDIO: quiet music bus + punchy sfx bus -------------------- */
     let ac, musicBus, sfxBus, muted = false;
     const MUSIC_VOL = 0.08, SFX_VOL = 0.30;
@@ -1028,7 +1037,7 @@
       q.fillStyle = '#ded895'; q.fillRect(0, gy, W, 6);
       q.fillStyle = '#70bd3e'; q.fillRect(0, gy - 4, W, 8);
       q.fillStyle = '#4f9227';
-      // NOTE: uses the same "off" (== SPD-scaled scroll) as everything
+      // Uses the same "off" (== SPD-scaled scroll) as everything
       // else, so grass moves in lockstep with the pipes.
       for (let i = -1; i < W / 13 + 1; i++) {
         const gx = ((i * 13 - off) % (W + 13) + W + 13) % (W + 13) - 13;
@@ -1060,13 +1069,19 @@
       best = Math.max(best, score);
       localStorage.flappyBest = best;
       sndHit(); fadeMusic();
-      // Give the score modal a beat after the hit effects, then let the
-      // player submit to the shared leaderboard.
-      if (score > 0) setTimeout(() => openScoreModal(score), 450);
+      // Fully automatic - no modal, no button. Fires silently in the
+      // background as long as a name has already been set (it always
+      // will be, since the one-time name modal runs before any gameplay
+      // can realistically finish).
+      if (score > 0) {
+        setTimeout(() => {
+          if (currentName()) silentSubmit(score);
+        }, 450);
+      }
     }
     addEventListener('keydown', (e) => {
       // Don't hijack Space (or any key) while the player is typing their
-      // name into the modal input - otherwise a space in their name, or
+      // name into a modal input - otherwise a space in their name, or
       // just pressing Space to type, would also flap/restart the game.
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
       if (e.code === 'Space') { e.preventDefault(); flap(); }
@@ -1141,10 +1156,6 @@
     }
     reset();
     requestAnimationFrame(loop);
-    // Fire the one-time "submit your existing best" check shortly after
-    // load (small delay so it doesn't visually collide with the canvas
-    // still settling into place on first paint).
-    setTimeout(maybePromptExistingBest, 600);
   </script>
 </body>
 </html>
