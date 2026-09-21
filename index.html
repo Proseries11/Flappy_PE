@@ -1,0 +1,1150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Flappy Deluxe v24</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #0b0f1a;
+      font-family: Arial, sans-serif;
+      overflow: hidden;
+      position: fixed;
+      inset: 0;
+      overscroll-behavior: none;
+      touch-action: none;
+    }
+    #wrap {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      touch-action: none;
+    }
+    canvas {
+      display: block;
+      box-sizing: border-box;
+      border: 3px solid #222;
+      border-radius: 10px;
+      touch-action: none;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+    }
+    /* Edge-to-edge on small/phone screens - true fullscreen feel, no frame */
+    @media (max-width: 640px), (max-height: 640px) {
+      canvas {
+        border: none;
+        border-radius: 0;
+        box-shadow: none;
+      }
+    }
+    /* -------------------- LEADERBOARD UI --------------------
+     * A trophy button (top-right) opens the leaderboard. A separate modal
+     * auto-pops after a run ends so the player can submit their score.
+     * Both are plain fixed-position DOM overlays (NOT drawn on the
+     * canvas), which keeps them simple, readable at any canvas scale, and
+     * immune to the blur/scaling issues fixed for the in-canvas sprites.
+     */
+    #leaderboardBtn {
+      position: absolute;
+      top: 9px;
+      right: 9px;
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 9px;
+      background: rgba(0, 0, 0, 0.4);
+      color: #fff;
+      font-size: 17px;
+      cursor: pointer;
+      user-select: none;
+      z-index: 5;
+    }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+      font-family: Arial, sans-serif;
+    }
+    .modal-box {
+      background: #1c2333;
+      color: #fff;
+      padding: 20px 22px;
+      border-radius: 14px;
+      width: min(300px, 85vw);
+      text-align: center;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+    }
+    .modal-title { font-size: 20px; font-weight: bold; margin-bottom: 10px; }
+    .modal-score { font-size: 16px; margin-bottom: 14px; color: #ffce29; }
+    #nameInput {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 9px 10px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #0e1420;
+      color: #fff;
+      font-size: 15px;
+      margin-bottom: 12px;
+    }
+    /* Shown instead of the input once a name is already remembered, so
+       returning players don't have to retype it every run. */
+    #savedNameRow {
+      display: none;
+      font-size: 14px;
+      margin-bottom: 12px;
+      color: #cfe8ff;
+    }
+    #savedNameRow b { color: #fff; }
+    #changeNameLink {
+      color: #8ab4ff;
+      text-decoration: underline;
+      cursor: pointer;
+      margin-left: 6px;
+    }
+    .modal-btn-row { display: flex; gap: 8px; }
+    .modal-btn-row button {
+      flex: 1;
+      padding: 9px 0;
+      border-radius: 8px;
+      border: 0;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #submitScoreBtn { background: #e2001a; color: #fff; }
+    #submitScoreBtn:disabled { opacity: 0.6; cursor: default; }
+    #skipScoreBtn { background: #333c50; color: #fff; }
+    #closeLeaderboardBtn {
+      background: #333c50;
+      color: #fff;
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 0;
+      width: 100%;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .modal-status { font-size: 13px; margin-top: 8px; min-height: 16px; color: #9ad2ff; }
+    .modal-list { text-align: left; max-height: 260px; overflow-y: auto; margin: 12px 0; font-size: 14px; }
+    .lb-row { display: flex; justify-content: space-between; padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+    .lb-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c" width="320" height="480"></canvas>
+    <button id="leaderboardBtn">&#127942;</button>
+  </div>
+  <!-- Auto-opens after a run ends (score > 0): submit to the shared
+       Supabase leaderboard. If a name is already remembered, the input
+       is hidden and replaced with a quick confirmation line instead. -->
+  <div id="scoreModal" class="modal-backdrop">
+    <div class="modal-box">
+      <div id="scoreModalTitle" class="modal-title">Game Over!</div>
+      <div id="scoreModalScore" class="modal-score"></div>
+      <div id="savedNameRow">Submitting as <b id="savedNameText"></b><span id="changeNameLink">change</span></div>
+      <input id="nameInput" type="text" maxlength="20" placeholder="Your name" autocomplete="off" />
+      <div class="modal-btn-row">
+        <button id="submitScoreBtn">Submit Score</button>
+        <button id="skipScoreBtn">Skip</button>
+      </div>
+      <div id="submitStatus" class="modal-status"></div>
+    </div>
+  </div>
+  <!-- Opened via the trophy button - shows the top scores from everyone
+       who has submitted to this same shared leaderboard, deduped so each
+       person's HIGHEST score is the only one shown. -->
+  <div id="leaderboardModal" class="modal-backdrop">
+    <div class="modal-box">
+      <div class="modal-title">&#127942; Leaderboard</div>
+      <div id="leaderboardList" class="modal-list">Loading...</div>
+      <button id="closeLeaderboardBtn">Close</button>
+    </div>
+  </div>
+  <script>
+    const cv = document.getElementById('c');
+    const q = cv.getContext('2d');
+    const W = 320, H = 480, GND = 60;
+    const GRAVITY = 0.45, FLAP = -7.5, GAP = 125, PW = 54, SPD = 2;
+    /* -------------------- RESPONSIVE FULLSCREEN --------------------
+     * Internal render resolution stays a crisp 320x480 (all game-logic
+     * coordinates untouched). We only scale the CSS display size:
+     *  - phone (portrait): scales up to fill almost the entire screen
+     *    edge-to-edge (frame/shadow removed via the media query above).
+     *  - PC / wide browser window: scales up to fill the full window
+     *    height (or width, whichever is the limiting dimension) while
+     *    keeping the 320:480 aspect ratio locked, so the art is never
+     *    stretched/distorted - any leftover space is simply letterboxed.
+     */
+    function fitCanvas() {
+      const vv = window.visualViewport;
+      const vw = vv ? vv.width : window.innerWidth;
+      const vh = vv ? vv.height : window.innerHeight;
+      const scale = Math.min(vw / W, vh / H);
+      cv.style.width = Math.floor(W * scale) + 'px';
+      cv.style.height = Math.floor(H * scale) + 'px';
+      /* -------------------- HIGH-DPI (RETINA) SHARPNESS --------------------
+       * Previously the canvas' actual pixel buffer stayed a fixed 320x480
+       * and was just stretched larger via CSS to fill the screen - that
+       * stretch (bitmap upscaling) is what blurred fine detail like the
+       * license-plate text and the score/"Game Over" text, even though the
+       * game's drawing coordinates were untouched. Here we size the REAL
+       * pixel buffer to match physical device pixels (CSS size x
+       * devicePixelRatio), then rescale the drawing context so all the
+       * existing game code - which still thinks in the original 320x480
+       * coordinate space - keeps working unchanged, but now renders at
+       * full native display resolution instead of being upscaled after
+       * the fact.
+       */
+      const dpr = Math.min(window.devicePixelRatio || 1, 3);
+      const bw = Math.round(W * scale * dpr);
+      const bh = Math.round(H * scale * dpr);
+      if (cv.width !== bw || cv.height !== bh) {
+        cv.width = bw;
+        cv.height = bh;
+      }
+      q.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0);
+    }
+    window.addEventListener('resize', fitCanvas);
+    window.addEventListener('orientationchange', () => setTimeout(fitCanvas, 120));
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', fitCanvas);
+    fitCanvas();
+    let y, v, pipes, score, mode, frame = 0, gOff = 0, clouds, shake = 0;
+    let lastTime = null, dt = 1;
+    let birdAngle = 0;
+    let best = +(localStorage.flappyBest || 0);
+    /* -------------------- SUPABASE LEADERBOARD --------------------
+     * Supabase gives every project a free hosted Postgres database with
+     * an auto-generated REST API - reachable with plain fetch() calls,
+     * no SDK/script tag needed, keeping this a single self-contained
+     * HTML file. Swapped in after CheddaBoards.com got flagged by the
+     * office's Zscaler web filter as "Miscellaneous/Unknown."
+     *
+     * NOTE: the "anon public" / "publishable" key below is SAFE to embed
+     * in client-side code and share - it can only do what your Row Level
+     * Security policies allow (insert + read on the scores table). Your
+     * actual Supabase ACCOUNT password should never appear in this file
+     * or any comment in it.
+     */
+    const SUPABASE_URL = 'https://zcikcybrulwhbclsjjhb.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_3bdAzSXPbVeS6w0MD_S2sA_GapTsNB5';
+
+    async function submitScoreToSupabase(nickname, scoreValue) {
+      try {
+        const res = await fetch(SUPABASE_URL + '/rest/v1/scores', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+            'Prefer': 'return=minimal'
+          },
+          body: JSON.stringify({ name: nickname, score: scoreValue })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return true;
+      } catch (err) {
+        console.error('Supabase submit failed:', err);
+        return false;
+      }
+    }
+
+    async function fetchLeaderboard() {
+      try {
+        /* -------------------- DEDUPE BY NAME (SHOW ONLY EACH PLAYER'S BEST) --------------------
+         * Supabase's REST API doesn't do a "GROUP BY highest score per
+         * name" in one simple call without writing a SQL view/RPC, so we
+         * pull a larger pool (top 200 rows, already sorted highest-first)
+         * and then dedupe client-side: since the rows arrive in
+         * descending score order, the FIRST time we encounter a given
+         * name is automatically that person's highest score. Every
+         * later (lower) row for that same name is simply skipped.
+         * Names are compared trimmed + lowercased so "Peter" and "peter "
+         * are treated as the same person.
+         */
+        const url = SUPABASE_URL + '/rest/v1/scores?select=name,score&order=score.desc&limit=200';
+        const res = await fetch(url, {
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
+          }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const rows = await res.json(); // Supabase returns a plain JSON array of rows.
+        const seen = new Set();
+        const deduped = [];
+        for (const row of rows) {
+          const key = (row.name || '').trim().toLowerCase();
+          if (!key || seen.has(key)) continue;
+          seen.add(key);
+          deduped.push(row);
+          if (deduped.length >= 10) break;
+        }
+        return deduped;
+      } catch (err) {
+        console.error('Supabase fetch failed:', err);
+        return null;
+      }
+    }
+
+    // ---- DOM wiring for the two modals ----
+    const leaderboardBtn = document.getElementById('leaderboardBtn');
+    const scoreModal = document.getElementById('scoreModal');
+    const scoreModalScore = document.getElementById('scoreModalScore');
+    const nameInput = document.getElementById('nameInput');
+    const submitScoreBtn = document.getElementById('submitScoreBtn');
+    const skipScoreBtn = document.getElementById('skipScoreBtn');
+    const submitStatus = document.getElementById('submitStatus');
+    const leaderboardModal = document.getElementById('leaderboardModal');
+    const leaderboardList = document.getElementById('leaderboardList');
+    const closeLeaderboardBtn = document.getElementById('closeLeaderboardBtn');
+    const scoreModalTitle = document.getElementById('scoreModalTitle');
+    const savedNameRow = document.getElementById('savedNameRow');
+    const savedNameText = document.getElementById('savedNameText');
+    const changeNameLink = document.getElementById('changeNameLink');
+
+    nameInput.value = localStorage.flappyName || '';
+
+    /* -------------------- REMEMBERED NAME UX --------------------
+     * If a name was saved from a previous submission, hide the text input
+     * entirely and show a compact "Submitting as <name>" confirmation
+     * instead - so returning players never have to retype it. A small
+     * "change" link swaps back to the editable input for anyone who
+     * wants to submit under a different name (e.g. testing, or someone
+     * else playing on the same device).
+     */
+    function refreshNameRowUI() {
+      const saved = localStorage.flappyName;
+      if (saved) {
+        savedNameText.textContent = saved;
+        savedNameRow.style.display = 'block';
+        nameInput.style.display = 'none';
+      } else {
+        savedNameRow.style.display = 'none';
+        nameInput.style.display = 'block';
+      }
+    }
+    changeNameLink.onclick = (e) => {
+      e.stopPropagation();
+      savedNameRow.style.display = 'none';
+      nameInput.style.display = 'block';
+      nameInput.value = localStorage.flappyName || '';
+      nameInput.focus();
+    };
+    refreshNameRowUI();
+
+    // Tracks WHICH score the currently-open modal should submit, since the
+    // same modal/buttons are reused for two different situations below.
+    let pendingScoreToSubmit = 0;
+    // True only while the one-time "submit your existing best" prompt
+    // (added for the leaderboard rollout) is showing, so we know to mark
+    // it as handled once the player submits or skips it.
+    let isExistingBestPrompt = false;
+
+    function openScoreModal(finalScore) {
+      isExistingBestPrompt = false;
+      pendingScoreToSubmit = finalScore;
+      scoreModalTitle.textContent = 'Game Over!';
+      scoreModalScore.textContent = 'You scored ' + finalScore + '!';
+      submitStatus.textContent = '';
+      submitScoreBtn.disabled = false;
+      submitScoreBtn.textContent = 'Submit Score';
+      refreshNameRowUI();
+      scoreModal.style.display = 'flex';
+    }
+    function closeScoreModal() { scoreModal.style.display = 'none'; }
+
+    /* -------------------- ONE-TIME "SUBMIT EXISTING BEST" PROMPT --------------------
+     * Anyone updating from a pre-leaderboard version of the file already
+     * has a personal best sitting in localStorage that would otherwise
+     * never reach the shared board unless they happened to beat it again.
+     * On first load of THIS version, if a best score exists and hasn't
+     * been offered up yet, we prompt once to submit it - so nobody loses
+     * credit for scores they already earned. Skipping or submitting both
+     * mark it as handled (localStorage.flappyBestPrompted) so this only
+     * ever appears a single time per device.
+     */
+    function maybePromptExistingBest() {
+      if (localStorage.flappyBestPrompted) return;
+      if (!best || best <= 0) return;
+      isExistingBestPrompt = true;
+      pendingScoreToSubmit = best;
+      scoreModalTitle.textContent = 'Welcome to the leaderboard!';
+      scoreModalScore.textContent = 'Your existing best is ' + best + ' - submit it?';
+      submitStatus.textContent = '';
+      submitScoreBtn.disabled = false;
+      submitScoreBtn.textContent = 'Submit Score';
+      refreshNameRowUI();
+      scoreModal.style.display = 'flex';
+    }
+
+    function getNameToSubmit() {
+      // Prefer whatever is currently typed in the input if it's visible
+      // and non-empty; otherwise fall back to the remembered name shown
+      // in the "Submitting as X" confirmation row.
+      const typed = nameInput.value.trim();
+      if (nameInput.style.display !== 'none' && typed) return typed;
+      return (localStorage.flappyName || '').trim();
+    }
+
+    submitScoreBtn.onclick = async (e) => {
+      e.stopPropagation();
+      const nm = getNameToSubmit();
+      if (nm.length < 2) {
+        submitStatus.textContent = 'Enter a name (2+ characters).';
+        return;
+      }
+      localStorage.flappyName = nm;
+      submitScoreBtn.disabled = true;
+      submitScoreBtn.textContent = 'Submitting...';
+      const ok = await submitScoreToSupabase(nm, pendingScoreToSubmit);
+      if (ok) {
+        submitStatus.textContent = 'Submitted!';
+        if (isExistingBestPrompt) localStorage.flappyBestPrompted = '1';
+        setTimeout(closeScoreModal, 700);
+      } else {
+        submitStatus.textContent = 'Could not submit - check connection.';
+        submitScoreBtn.disabled = false;
+        submitScoreBtn.textContent = 'Retry';
+      }
+    };
+    skipScoreBtn.onclick = (e) => {
+      e.stopPropagation();
+      if (isExistingBestPrompt) localStorage.flappyBestPrompted = '1';
+      closeScoreModal();
+    };
+
+    leaderboardBtn.onclick = async (e) => {
+      e.stopPropagation();
+      leaderboardList.textContent = 'Loading...';
+      leaderboardModal.style.display = 'flex';
+      const entries = await fetchLeaderboard();
+      if (!entries) {
+        leaderboardList.textContent = 'Could not load leaderboard - check connection.';
+        return;
+      }
+      if (!entries.length) {
+        leaderboardList.textContent = 'No scores yet - be the first!';
+        return;
+      }
+      leaderboardList.innerHTML = entries.map((en, i) =>
+        '<div class="lb-row"><span>#' + (i + 1) + ' ' + (en.name || 'Player') +
+        '</span><span>' + en.score + '</span></div>'
+      ).join('');
+    };
+    closeLeaderboardBtn.onclick = (e) => { e.stopPropagation(); leaderboardModal.style.display = 'none'; };
+    /* -------------------- AUDIO: quiet music bus + punchy sfx bus -------------------- */
+    let ac, musicBus, sfxBus, muted = false;
+    const MUSIC_VOL = 0.08, SFX_VOL = 0.30;
+    function initAudio() {
+      if (ac) return;
+      ac = new (window.AudioContext || window.webkitAudioContext)();
+      musicBus = ac.createGain();
+      sfxBus = ac.createGain();
+      musicBus.gain.value = MUSIC_VOL;
+      sfxBus.gain.value = SFX_VOL;
+      musicBus.connect(ac.destination);
+      sfxBus.connect(ac.destination);
+    }
+    function sfx(freq, dur, type = 'square', slide = 0) {
+      if (!ac || muted) return;
+      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(1, freq + slide), t + dur);
+      g.gain.setValueAtTime(1, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g); g.connect(sfxBus); o.start(t); o.stop(t + dur);
+    }
+    function musicNote(freq, dur, type, vol) {
+      if (!ac || muted || !freq) return;
+      const t = ac.currentTime, o = ac.createOscillator(), g = ac.createGain();
+      o.type = type;
+      o.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vol, t + 0.02);
+      g.gain.setValueAtTime(vol, t + dur * 0.6);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      o.connect(g); g.connect(musicBus); o.start(t); o.stop(t + dur);
+    }
+    const sndFlap = () => sfx(620, 0.08, 'square', 180);
+    const sndScore = () => { sfx(880, 0.07, 'square'); setTimeout(() => sfx(1180, 0.09, 'square'), 65); };
+    const sndHit = () => { sfx(180, 0.18, 'sawtooth', -110); sfx(90, 0.30, 'triangle'); };
+    const MELODY = [330, 392, 440, 392, 330, 262, 294, 294, 349, 330, 294, 262, 262, 0];
+    let melIndex = 0, nextNoteAt = 0;
+    function playMusic() {
+      if (!ac || muted || ac.currentTime < nextNoteAt) return;
+      const n = MELODY[melIndex % MELODY.length];
+      musicNote(n, 0.34, 'triangle', 0.6);
+      musicNote(n / 2, 0.34, 'square', 0.12);
+      melIndex++;
+      nextNoteAt = ac.currentTime + 0.30;
+    }
+    function restartMusic() {
+      if (!ac) return;
+      const t = ac.currentTime;
+      musicBus.gain.cancelScheduledValues(t);
+      musicBus.gain.setValueAtTime(MUSIC_VOL, t);
+      melIndex = 0;
+      nextNoteAt = t;
+    }
+    function fadeMusic() {
+      if (!ac) return;
+      const t = ac.currentTime;
+      musicBus.gain.cancelScheduledValues(t);
+      musicBus.gain.setValueAtTime(musicBus.gain.value, t);
+      musicBus.gain.linearRampToValueAtTime(0, t + 0.4);
+    }
+    /* -------------------- BIRD --------------------
+     * Two flap frames (wing-down = pixel-identical to the reference; wing-up
+     * raises the wing with the YELLOW body drawn behind it, so no holes show).
+     * Each frame is pre-baked to an offscreen canvas of true logical pixels.
+     * Up/down motion ROTATES that crisp sprite (smoothing off) so it is never
+     * stretched.
+     */
+    const BIRD_PX = 3;
+    const BIRD_PALETTE = {
+      K: '#000000', P: '#000000',
+      Y: '#f7ce29', D: '#de9e14',
+      W: '#ffffff', O: '#f68234', R: '#e52b1e'
+    };
+    const BIRD_FRAME_GRIDS = [
+      [
+        "......KKKKKK.....",
+        "....KKYYYYKWK....",
+        "...KYYYYYKWWWK...",
+        ".KKKKYYYYKWWKWK..",
+        "KWWWWKYYYKWWKWK..",
+        "KWWWWWKYYYKWWWK..",
+        "KYWWWYKYYYYKKKKK.",
+        ".KYYYKYYYYKRRRRRK",
+        "..KKKDDDDKRKKKKK.",
+        "....KOODDDKRRRRK.",
+        ".....KKDDDDKKKKK.",
+        ".......KKKK......"
+      ],
+      [
+        "......KKKKKK.....",
+        ".KKKKKYYYYKWK....",
+        "KWWWWKYYYKWWWK...",
+        "KWWWWWYYYKWWKWK..",
+        "KYWWWYYYYKWWKWK..",
+        ".KYYYYKYYYKWWWK..",
+        ".KYYYYKYYYYKKKKK.",
+        ".KYYYKYYYYKRRRRRK",
+        "..KKKDDDDKRKKKKK.",
+        "....KOODDDKRRRRK.",
+        ".....KKDDDDKKKKK.",
+        ".......KKKK......"
+      ]
+    ];
+    function bakeFrame(grid) {
+      const cols = grid[0].length, rows = grid.length;
+      const off = document.createElement('canvas');
+      off.width = cols * BIRD_PX;
+      off.height = rows * BIRD_PX;
+      const oc = off.getContext('2d');
+      oc.imageSmoothingEnabled = false;
+      for (let cy = 0; cy < rows; cy++) {
+        for (let cx = 0; cx < cols; cx++) {
+          const color = BIRD_PALETTE[grid[cy][cx]];
+          if (!color) continue;
+          oc.fillStyle = color;
+          oc.fillRect(cx * BIRD_PX, cy * BIRD_PX, BIRD_PX, BIRD_PX);
+        }
+      }
+      return off;
+    }
+    const BIRD_SPRITES = BIRD_FRAME_GRIDS.map(bakeFrame);
+    function clamp(n, lo, hi) { return n < lo ? lo : n > hi ? hi : n; }
+    function bird() {
+      let target;
+      if (mode === 0) target = 0;
+      else target = clamp(v * 0.09, -0.32, 0.85);
+      birdAngle += (target - birdAngle) * (1 - Math.pow(1 - 0.25, dt));
+      const sprite = BIRD_SPRITES[Math.floor(frame / 6) % 2];
+      q.save();
+      q.translate(66, y);
+      q.rotate(birdAngle);
+      q.imageSmoothingEnabled = false;
+      q.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
+      q.restore();
+    }
+    /* -------------------- TOYOTA BRANDING --------------------
+     * The emblem is the REAL logo, traced pixel-by-pixel from the source image:
+     * red pixels were detected and mapped to a 60x39 logical grid. It is
+     * baked once to an offscreen canvas, then drawn scaled down with smoothing
+     * for a clean, accurate mark - no hand-drawn ellipses, no embedded PNG.
+     */
+    const TOYOTA_COLS = 60;
+    const TOYOTA_ROWS = 39;
+    const TOYOTA_GRID = [
+      "000000000000000000000001111111111111100000000000000000000000",
+      "000000000000000000111111111111111111111111000000000000000000",
+      "000000000000000111111111111111111111111111111000000000000000",
+      "000000000000011111111000000011110000000111111110000000000000",
+      "000000000001111110000000000111111000000000111111100000000000",
+      "000000000111111000000000001111111100000000000111111000000000",
+      "000000001111110000000000011111111110000000000011111110000000",
+      "000000111111100000000000011111111110000000000001111111000000",
+      "000001111111100000000000111110011111000000000001111111100000",
+      "000011111111100000000000111100001111000000000001111111110000",
+      "000111111111100000000000111000000111000000000011111111111000",
+      "000111101111111000000001111000000111100000000111111101111100",
+      "001111001111111110000001111000000111100000011111111100111100",
+      "011111000111111111100001110000000011100011111111111000011110",
+      "011110000011111111111111110000000011111111111111110000011110",
+      "011110000001111111111111111111111111111111111111100000011111",
+      "111110000000111111111111111111111111111111111110000000001111",
+      "111100000000000111111111111111111111111111111000000000001111",
+      "111100000000000001111111111111111111111111100000000000001111",
+      "111100000000000000000011111111111111110000000000000000001111",
+      "111100000000000000000011110000000011110000000000000000001111",
+      "111110000000000000000011110000000011110000000000000000011111",
+      "111110000000000000000001110000000011110000000000000000011111",
+      "111110000000000000000001110000000011110000000000000000011111",
+      "011111000000000000000001110000000011100000000000000000111110",
+      "011111000000000000000001110000000011100000000000000000111110",
+      "001111100000000000000001111000000111100000000000000001111100",
+      "001111100000000000000001111000000111100000000000000001111100",
+      "000111110000000000000001111000000111100000000000000011111000",
+      "000011111000000000000000111100001111100000000000000111110000",
+      "000001111100000000000000111110011111000000000000001111100000",
+      "000000111111000000000000111111111111000000000000111111000000",
+      "000000011111100000000000011111111111000000000001111110000000",
+      "000000000111111000000000011111111110000000000111111000000000",
+      "000000000011111110000000011111111110000000011111110000000000",
+      "000000000000111111110000001111111100000011111111000000000000",
+      "000000000000000111111111100111111001111111111000000000000000",
+      "000000000000000000111111111111111111111111000000000000000000",
+      "000000000000000000000011111111111111110000000000000000000000"
+    ];
+    const TOYOTA_SPRITE = (function () {
+      const cell = 3;
+      const off = document.createElement('canvas');
+      off.width = TOYOTA_COLS * cell;
+      off.height = TOYOTA_ROWS * cell;
+      const oc = off.getContext('2d');
+      oc.fillStyle = '#e2001a';
+      for (let r = 0; r < TOYOTA_ROWS; r++) {
+        const row = TOYOTA_GRID[r];
+        for (let c = 0; c < TOYOTA_COLS; c++) {
+          if (row[c] === '1') oc.fillRect(c * cell, r * cell, cell, cell);
+        }
+      }
+      return off;
+    })();
+    /* -------------------- RAV4 SPRITE (VECTOR) --------------------
+     * Instead of baking to a small offscreen bitmap and stretching that
+     * bitmap up/down (which is what caused the earlier blur), the car is
+     * stored as a run-length-encoded list of flat-color rectangles - the
+     * SAME technique the grass tufts/pipes use (plain q.fillRect() calls
+     * drawn straight onto the live canvas every frame). There is no raster
+     * resize step at all, so it stays perfectly crisp - including the
+     * "FLAP" license plate text - at ANY display size.
+     *
+     * >>> CAR_DISPLAY_W is the single knob for how big the car is drawn.
+     * Since this is true vector drawing (not a bitmap), you can freely
+     * make this bigger or smaller with zero quality loss/blur.
+     */
+    const CAR_COLS = 100;
+    const CAR_ROWS = 82;
+    const CAR_DISPLAY_W = 84;
+    const CAR_PALETTE = {
+      A: '#48494a',
+      B: '#666667',
+      C: '#feea8d',
+      D: '#575654',
+      E: '#fcdf66',
+      F: '#c02319',
+      G: '#e54634',
+      H: '#efc43b',
+      I: '#d69f1b',
+      J: '#69473b',
+      K: '#b78014',
+      L: '#fd7054',
+      M: '#908565',
+      N: '#bba050',
+      O: '#ffffff',
+      P: '#030000',
+      Q: '#895610',
+      R: '#e2723d',
+      S: '#8c712c',
+      T: '#4e120b'
+    };
+    // Each entry: [colStart, row, colSpan, paletteLetter] - a run of
+    // same-color pixels merged into one rectangle (1,479 runs total,
+    // reconstructed losslessly from the original 100x82 pixel grid).
+    const CAR_RUNS = [
+      [48,3,1,'T'],[49,3,2,'A'],[51,3,1,'P'],[26,4,5,'A'],[31,4,1,'P'],[35,4,30,'A'],[68,4,1,'P'],[69,4,5,'A'],
+      [24,5,1,'P'],[25,5,1,'A'],[26,5,5,'D'],[31,5,4,'A'],[35,5,3,'F'],[38,5,27,'G'],[65,5,2,'F'],[67,5,2,'A'],
+      [69,5,5,'D'],[74,5,1,'A'],[75,5,1,'S'],[23,6,2,'T'],[25,6,3,'D'],[28,6,7,'F'],[35,6,30,'L'],[65,6,7,'F'],
+      [72,6,3,'D'],[75,6,1,'I'],[76,6,1,'T'],[77,6,1,'A'],[22,7,1,'T'],[23,7,1,'H'],[24,7,1,'I'],[25,7,2,'D'],
+      [27,7,4,'F'],[31,7,38,'L'],[69,7,4,'F'],[73,7,2,'D'],[75,7,1,'I'],[76,7,1,'H'],[77,7,1,'A'],[22,8,1,'J'],
+      [23,8,1,'H'],[24,8,1,'B'],[25,8,1,'D'],[26,8,8,'F'],[34,8,32,'R'],[66,8,8,'F'],[74,8,2,'D'],[76,8,1,'H'],
+      [77,8,1,'J'],[78,8,1,'T'],[21,9,1,'J'],[22,9,1,'H'],[23,9,1,'I'],[24,9,2,'A'],[26,9,8,'F'],[34,9,32,'D'],
+      [66,9,8,'F'],[74,9,1,'D'],[75,9,1,'A'],[76,9,1,'I'],[77,9,1,'H'],[78,9,1,'T'],[21,10,1,'Q'],[22,10,1,'H'],
+      [23,10,1,'B'],[24,10,7,'D'],[31,10,9,'B'],[40,10,20,'D'],[60,10,9,'B'],[69,10,7,'D'],[76,10,1,'B'],
+      [77,10,1,'H'],[78,10,1,'Q'],[79,10,1,'T'],[20,11,1,'T'],[21,11,1,'H'],[22,11,1,'I'],[23,11,2,'D'],
+      [25,11,16,'B'],[41,11,18,'D'],[59,11,16,'B'],[75,11,2,'D'],[77,11,1,'I'],[78,11,1,'H'],[79,11,1,'T'],
+      [20,12,1,'Q'],[21,12,1,'H'],[22,12,1,'K'],[23,12,1,'D'],[24,12,19,'B'],[43,12,14,'D'],[57,12,19,'B'],
+      [76,12,2,'D'],[78,12,1,'H'],[79,12,1,'Q'],[19,13,1,'Q'],[20,13,2,'H'],[22,13,2,'D'],[24,13,23,'B'],
+      [47,13,6,'D'],[53,13,23,'B'],[76,13,2,'D'],[78,13,1,'I'],[79,13,1,'H'],[80,13,1,'Q'],[19,14,1,'T'],
+      [20,14,1,'H'],[21,14,1,'I'],[22,14,1,'D'],[23,14,54,'B'],[77,14,1,'D'],[78,14,1,'K'],[79,14,1,'H'],
+      [80,14,1,'T'],[18,15,1,'T'],[19,15,1,'Q'],[20,15,1,'H'],[21,15,2,'D'],[23,15,54,'B'],[77,15,2,'D'],
+      [79,15,1,'H'],[80,15,1,'Q'],[81,15,1,'T'],[18,16,1,'T'],[19,16,2,'H'],[21,16,2,'D'],[23,16,55,'B'],
+      [78,16,1,'D'],[79,16,1,'I'],[80,16,1,'H'],[81,16,1,'T'],[18,17,1,'Q'],[19,17,1,'H'],[20,17,1,'K'],[21,17,1,'D'],
+      [22,17,56,'B'],[78,17,2,'D'],[80,17,1,'H'],[81,17,1,'Q'],[17,18,1,'J'],[18,18,2,'H'],[20,18,2,'D'],
+      [22,18,56,'B'],[78,18,2,'D'],[80,18,2,'H'],[82,18,1,'J'],[17,19,1,'T'],[18,19,1,'H'],[19,19,1,'N'],
+      [20,19,1,'D'],[21,19,58,'B'],[79,19,1,'D'],[80,19,1,'K'],[81,19,1,'H'],[82,19,1,'T'],[7,20,2,'T'],[9,20,2,'P'],
+      [11,20,1,'T'],[12,20,1,'P'],[17,20,1,'Q'],[18,20,1,'H'],[19,20,1,'B'],[20,20,1,'D'],[21,20,58,'B'],
+      [79,20,2,'D'],[81,20,1,'H'],[82,20,1,'Q'],[87,20,1,'P'],[88,20,2,'A'],[90,20,2,'P'],[92,20,2,'T'],[4,21,1,'D'],
+      [5,21,2,'B'],[7,21,5,'A'],[12,21,1,'T'],[13,21,1,'A'],[16,21,1,'Q'],[17,21,2,'H'],[19,21,2,'D'],[21,21,58,'B'],
+      [79,21,2,'D'],[81,21,2,'H'],[83,21,1,'J'],[86,21,8,'A'],[94,21,1,'B'],[95,21,1,'D'],[3,22,1,'T'],[4,22,1,'D'],
+      [5,22,5,'B'],[10,22,2,'D'],[12,22,1,'B'],[13,22,1,'D'],[16,22,1,'T'],[17,22,1,'H'],[18,22,1,'N'],[19,22,2,'D'],
+      [21,22,59,'B'],[80,22,1,'D'],[81,22,1,'N'],[82,22,1,'H'],[83,22,1,'T'],[86,22,1,'A'],[87,22,8,'B'],
+      [95,22,1,'D'],[96,22,1,'T'],[3,23,1,'A'],[4,23,6,'D'],[10,23,1,'B'],[11,23,3,'D'],[16,23,1,'Q'],[17,23,1,'H'],
+      [18,23,2,'D'],[20,23,60,'B'],[80,23,2,'D'],[82,23,1,'H'],[83,23,1,'Q'],[84,23,1,'T'],[86,23,1,'D'],
+      [87,23,3,'B'],[90,23,6,'D'],[96,23,1,'A'],[3,24,1,'A'],[4,24,9,'D'],[13,24,1,'J'],[15,24,1,'T'],[16,24,2,'H'],
+      [18,24,2,'D'],[20,24,60,'B'],[80,24,2,'D'],[82,24,2,'H'],[84,24,1,'T'],[86,24,1,'A'],[87,24,9,'D'],
+      [96,24,1,'B'],[3,25,1,'B'],[4,25,1,'D'],[5,25,1,'B'],[6,25,7,'D'],[13,25,1,'A'],[15,25,1,'T'],[16,25,1,'N'],
+      [17,25,1,'K'],[18,25,3,'D'],[21,25,58,'B'],[79,25,3,'D'],[82,25,1,'S'],[83,25,1,'N'],[84,25,1,'A'],
+      [86,25,1,'A'],[87,25,7,'D'],[94,25,3,'B'],[3,26,1,'A'],[4,26,1,'D'],[5,26,1,'B'],[6,26,7,'D'],[13,26,1,'A'],
+      [14,26,1,'P'],[15,26,72,'A'],[87,26,7,'D'],[94,26,1,'B'],[95,26,1,'D'],[96,26,1,'A'],[3,27,3,'A'],[6,27,7,'D'],
+      [13,27,3,'A'],[16,27,10,'M'],[26,27,1,'S'],[27,27,46,'M'],[73,27,1,'S'],[74,27,10,'M'],[84,27,1,'Q'],
+      [85,27,3,'A'],[88,27,4,'D'],[92,27,1,'A'],[93,27,1,'D'],[94,27,3,'A'],[4,28,7,'A'],[11,28,3,'D'],[14,28,2,'H'],
+      [16,28,1,'E'],[17,28,9,'C'],[26,28,18,'E'],[44,28,11,'C'],[55,28,19,'E'],[74,28,10,'C'],[84,28,2,'H'],
+      [86,28,1,'A'],[87,28,2,'D'],[89,28,7,'A'],[7,29,5,'A'],[12,29,1,'D'],[13,29,1,'S'],[14,29,1,'H'],[15,29,2,'E'],
+      [17,29,54,'C'],[71,29,2,'E'],[73,29,12,'C'],[85,29,1,'H'],[86,29,1,'I'],[87,29,6,'A'],[10,30,2,'A'],
+      [12,30,1,'S'],[13,30,2,'H'],[15,30,56,'C'],[71,30,2,'E'],[73,30,12,'C'],[85,30,1,'E'],[86,30,1,'H'],
+      [87,30,1,'S'],[88,30,2,'A'],[11,31,1,'T'],[12,31,1,'I'],[13,31,2,'E'],[15,31,70,'C'],[85,31,2,'E'],
+      [87,31,1,'H'],[88,31,1,'T'],[11,32,1,'Q'],[12,32,2,'E'],[14,32,1,'I'],[15,32,1,'E'],[16,32,69,'C'],
+      [85,32,2,'H'],[87,32,1,'E'],[88,32,1,'Q'],[89,32,1,'T'],[10,33,1,'T'],[11,33,2,'E'],[13,33,1,'H'],[14,33,1,'K'],
+      [15,33,1,'H'],[16,33,2,'E'],[18,33,64,'C'],[82,33,2,'E'],[84,33,1,'H'],[85,33,1,'R'],[86,33,1,'I'],
+      [87,33,1,'C'],[88,33,1,'E'],[89,33,1,'T'],[10,34,1,'Q'],[11,34,2,'E'],[13,34,2,'L'],[15,34,1,'R'],[16,34,3,'N'],
+      [19,34,2,'E'],[21,34,5,'C'],[26,34,2,'E'],[28,34,5,'C'],[33,34,7,'E'],[40,34,3,'C'],[43,34,7,'E'],[50,34,1,'C'],
+      [51,34,19,'E'],[70,34,9,'C'],[79,34,2,'E'],[81,34,3,'N'],[84,34,1,'R'],[85,34,2,'L'],[87,34,2,'E'],
+      [89,34,1,'Q'],[90,34,1,'T'],[9,35,1,'T'],[10,35,1,'H'],[11,35,1,'E'],[12,35,1,'H'],[13,35,1,'L'],[14,35,1,'N'],
+      [15,35,1,'M'],[16,35,3,'B'],[19,35,5,'N'],[24,35,2,'H'],[26,35,48,'E'],[74,35,2,'H'],[76,35,5,'N'],
+      [81,35,3,'B'],[84,35,1,'M'],[85,35,1,'N'],[86,35,1,'L'],[87,35,1,'H'],[88,35,1,'C'],[89,35,1,'H'],[90,35,1,'T'],
+      [9,36,1,'Q'],[10,36,2,'E'],[12,36,1,'K'],[13,36,7,'M'],[20,36,3,'B'],[23,36,1,'J'],[24,36,1,'S'],[25,36,2,'N'],
+      [27,36,1,'H'],[28,36,1,'E'],[29,36,19,'C'],[48,36,5,'E'],[53,36,7,'C'],[60,36,6,'E'],[66,36,5,'C'],
+      [71,36,1,'E'],[72,36,1,'H'],[73,36,2,'N'],[75,36,1,'S'],[76,36,1,'J'],[77,36,3,'B'],[80,36,7,'M'],[87,36,1,'K'],
+      [88,36,1,'H'],[89,36,1,'E'],[90,36,1,'S'],[9,37,1,'H'],[10,37,1,'E'],[11,37,1,'H'],[12,37,1,'K'],[13,37,1,'D'],
+      [14,37,3,'B'],[17,37,4,'O'],[21,37,3,'M'],[24,37,1,'B'],[25,37,1,'M'],[26,37,1,'B'],[27,37,3,'N'],
+      [30,37,16,'M'],[46,37,2,'N'],[48,37,4,'H'],[52,37,1,'K'],[53,37,1,'S'],[54,37,16,'M'],[70,37,3,'N'],
+      [73,37,3,'B'],[76,37,3,'M'],[79,37,4,'O'],[83,37,3,'B'],[86,37,1,'D'],[87,37,1,'S'],[88,37,1,'H'],[89,37,1,'E'],
+      [90,37,1,'H'],[91,37,1,'D'],[8,38,1,'D'],[9,38,1,'I'],[10,38,1,'H'],[11,38,1,'E'],[12,38,1,'H'],[13,38,1,'D'],
+      [14,38,3,'B'],[17,38,4,'O'],[21,38,4,'M'],[25,38,1,'L'],[26,38,1,'N'],[27,38,1,'M'],[28,38,1,'D'],[29,38,1,'A'],
+      [30,38,2,'Q'],[32,38,14,'S'],[46,38,3,'K'],[49,38,2,'N'],[51,38,2,'K'],[53,38,1,'Q'],[54,38,1,'J'],
+      [55,38,13,'S'],[68,38,1,'Q'],[69,38,1,'J'],[70,38,1,'A'],[71,38,2,'M'],[73,38,2,'N'],[75,38,4,'M'],
+      [79,38,4,'O'],[83,38,3,'B'],[86,38,1,'D'],[87,38,1,'I'],[88,38,1,'C'],[89,38,1,'E'],[90,38,1,'I'],[91,38,1,'D'],
+      [8,39,1,'D'],[9,39,1,'I'],[10,39,1,'E'],[11,39,1,'C'],[12,39,1,'E'],[13,39,1,'N'],[14,39,1,'S'],[15,39,2,'B'],
+      [17,39,3,'O'],[20,39,3,'B'],[23,39,1,'M'],[24,39,3,'L'],[27,39,1,'G'],[28,39,2,'N'],[30,39,2,'H'],
+      [32,39,13,'E'],[45,39,2,'H'],[47,39,1,'N'],[48,39,1,'J'],[49,39,2,'D'],[51,39,1,'J'],[52,39,1,'N'],
+      [53,39,2,'H'],[55,39,13,'E'],[68,39,2,'H'],[70,39,1,'N'],[71,39,1,'R'],[72,39,1,'G'],[73,39,3,'L'],
+      [76,39,1,'M'],[77,39,3,'B'],[80,39,3,'O'],[83,39,2,'B'],[85,39,1,'M'],[86,39,1,'N'],[87,39,1,'E'],[88,39,1,'C'],
+      [89,39,1,'E'],[90,39,1,'I'],[91,39,1,'D'],[8,40,1,'D'],[9,40,1,'H'],[10,40,3,'C'],[13,40,1,'E'],[14,40,1,'H'],
+      [15,40,2,'N'],[17,40,7,'B'],[24,40,2,'L'],[26,40,1,'G'],[27,40,1,'R'],[28,40,1,'E'],[29,40,4,'C'],
+      [33,40,12,'E'],[45,40,1,'H'],[46,40,1,'N'],[47,40,6,'B'],[53,40,1,'N'],[54,40,1,'I'],[55,40,2,'H'],
+      [57,40,11,'E'],[68,40,3,'C'],[71,40,1,'E'],[72,40,1,'R'],[73,40,1,'G'],[74,40,2,'L'],[76,40,7,'B'],
+      [83,40,2,'N'],[85,40,1,'H'],[86,40,1,'E'],[87,40,3,'C'],[90,40,1,'H'],[91,40,1,'D'],[8,41,1,'D'],[9,41,1,'I'],
+      [10,41,1,'H'],[11,41,1,'E'],[12,41,4,'C'],[16,41,1,'E'],[17,41,3,'N'],[20,41,1,'D'],[21,41,3,'B'],[24,41,2,'G'],
+      [26,41,1,'R'],[27,41,1,'E'],[28,41,3,'C'],[31,41,1,'E'],[32,41,1,'I'],[33,41,13,'S'],[46,41,1,'J'],
+      [47,41,1,'A'],[48,41,1,'D'],[49,41,2,'B'],[51,41,1,'D'],[52,41,1,'A'],[53,41,1,'B'],[54,41,2,'Q'],
+      [56,41,11,'S'],[67,41,1,'K'],[68,41,1,'H'],[69,41,4,'C'],[73,41,1,'R'],[74,41,2,'G'],[76,41,4,'B'],
+      [80,41,3,'N'],[83,41,1,'H'],[84,41,1,'E'],[85,41,3,'C'],[88,41,1,'E'],[89,41,1,'H'],[90,41,1,'I'],[91,41,1,'D'],
+      [8,42,1,'D'],[9,42,2,'I'],[11,42,4,'H'],[15,42,1,'E'],[16,42,2,'C'],[18,42,1,'E'],[19,42,1,'H'],[20,42,2,'N'],
+      [22,42,1,'M'],[23,42,1,'D'],[24,42,1,'J'],[25,42,1,'R'],[26,42,4,'C'],[30,42,1,'H'],[31,42,1,'S'],[32,42,1,'J'],
+      [33,42,13,'A'],[46,42,1,'J'],[47,42,3,'D'],[50,42,1,'B'],[51,42,1,'A'],[52,42,1,'D'],[53,42,2,'J'],
+      [55,42,12,'A'],[67,42,1,'J'],[68,42,1,'S'],[69,42,1,'H'],[70,42,1,'E'],[71,42,3,'C'],[74,42,1,'L'],
+      [75,42,1,'R'],[76,42,1,'D'],[77,42,1,'S'],[78,42,2,'N'],[80,42,1,'H'],[81,42,2,'E'],[83,42,1,'C'],[84,42,1,'E'],
+      [85,42,4,'H'],[89,42,2,'I'],[91,42,1,'D'],[8,43,1,'D'],[9,43,6,'I'],[15,43,5,'H'],[20,43,1,'E'],[21,43,2,'H'],
+      [23,43,2,'N'],[25,43,3,'C'],[28,43,1,'E'],[29,43,1,'H'],[30,43,1,'S'],[31,43,15,'A'],[46,43,8,'J'],
+      [54,43,15,'A'],[69,43,1,'S'],[70,43,1,'I'],[71,43,1,'E'],[72,43,3,'C'],[75,43,1,'E'],[76,43,1,'N'],
+      [77,43,8,'H'],[85,43,6,'I'],[91,43,1,'D'],[8,44,1,'D'],[9,44,12,'I'],[21,44,3,'H'],[24,44,1,'E'],[25,44,2,'C'],
+      [27,44,1,'E'],[28,44,1,'H'],[29,44,1,'S'],[30,44,4,'A'],[34,44,2,'D'],[36,44,10,'A'],[46,44,2,'D'],
+      [48,44,5,'J'],[53,44,1,'D'],[54,44,10,'A'],[64,44,1,'D'],[65,44,5,'A'],[70,44,1,'S'],[71,44,1,'I'],
+      [72,44,1,'E'],[73,44,3,'C'],[76,44,3,'H'],[79,44,12,'I'],[91,44,1,'D'],[8,45,1,'D'],[9,45,14,'I'],[23,45,1,'H'],
+      [24,45,1,'E'],[25,45,1,'C'],[26,45,1,'E'],[27,45,1,'H'],[28,45,1,'S'],[29,45,5,'A'],[34,45,1,'D'],
+      [35,45,18,'A'],[53,45,1,'D'],[54,45,10,'A'],[64,45,1,'D'],[65,45,6,'A'],[71,45,1,'S'],[72,45,1,'I'],
+      [73,45,1,'E'],[74,45,2,'C'],[76,45,1,'H'],[77,45,14,'I'],[91,45,1,'D'],[8,46,1,'D'],[9,46,3,'I'],[12,46,3,'K'],
+      [15,46,5,'Q'],[20,46,1,'I'],[21,46,1,'H'],[22,46,1,'E'],[23,46,2,'C'],[25,46,1,'E'],[26,46,1,'H'],[27,46,1,'S'],
+      [28,46,1,'D'],[29,46,5,'A'],[34,46,1,'D'],[35,46,1,'A'],[36,46,1,'D'],[37,46,4,'A'],[41,46,1,'D'],[42,46,4,'A'],
+      [46,46,2,'D'],[48,46,4,'A'],[52,46,2,'D'],[54,46,4,'A'],[58,46,2,'D'],[60,46,4,'A'],[64,46,3,'D'],[67,46,3,'A'],
+      [70,46,1,'D'],[71,46,1,'A'],[72,46,1,'S'],[73,46,1,'I'],[74,46,1,'E'],[75,46,2,'C'],[77,46,1,'E'],[78,46,1,'H'],
+      [79,46,1,'I'],[80,46,5,'Q'],[85,46,3,'K'],[88,46,3,'I'],[91,46,1,'D'],[8,47,1,'D'],[9,47,2,'I'],[11,47,1,'K'],
+      [12,47,1,'Q'],[13,47,2,'J'],[15,47,3,'Q'],[18,47,1,'K'],[19,47,1,'I'],[20,47,1,'H'],[21,47,4,'C'],[25,47,1,'H'],
+      [26,47,1,'K'],[27,47,1,'A'],[28,47,1,'D'],[29,47,5,'A'],[34,47,1,'D'],[35,47,1,'A'],[36,47,1,'D'],[37,47,3,'A'],
+      [40,47,2,'D'],[42,47,4,'A'],[46,47,2,'D'],[48,47,4,'A'],[52,47,2,'D'],[54,47,4,'A'],[58,47,2,'D'],[60,47,4,'A'],
+      [64,47,2,'D'],[66,47,4,'A'],[70,47,2,'D'],[72,47,1,'A'],[73,47,1,'K'],[74,47,1,'H'],[75,47,4,'C'],[79,47,1,'H'],
+      [80,47,1,'I'],[81,47,1,'K'],[82,47,3,'Q'],[85,47,3,'J'],[88,47,1,'Q'],[89,47,2,'I'],[91,47,1,'D'],[8,48,1,'D'],
+      [9,48,2,'I'],[11,48,1,'Q'],[12,48,1,'J'],[13,48,1,'A'],[14,48,1,'D'],[15,48,3,'K'],[18,48,2,'I'],[20,48,2,'H'],
+      [22,48,3,'E'],[25,48,1,'I'],[26,48,1,'J'],[27,48,46,'A'],[73,48,1,'J'],[74,48,1,'I'],[75,48,1,'H'],
+      [76,48,2,'E'],[78,48,2,'H'],[80,48,2,'I'],[82,48,3,'K'],[85,48,1,'Q'],[86,48,2,'A'],[88,48,1,'Q'],[89,48,2,'I'],
+      [91,48,1,'D'],[8,49,1,'D'],[9,49,1,'K'],[10,49,1,'I'],[11,49,1,'Q'],[12,49,3,'A'],[15,49,1,'S'],[16,49,6,'K'],
+      [22,49,2,'I'],[24,49,1,'H'],[25,49,1,'I'],[26,49,48,'A'],[74,49,1,'K'],[75,49,1,'H'],[76,49,3,'I'],
+      [79,49,5,'K'],[84,49,1,'Q'],[85,49,1,'J'],[86,49,2,'A'],[88,49,1,'Q'],[89,49,2,'I'],[91,49,1,'D'],[8,50,1,'D'],
+      [9,50,1,'K'],[10,50,1,'I'],[11,50,1,'Q'],[12,50,1,'A'],[13,50,1,'B'],[14,50,2,'D'],[16,50,8,'K'],[24,50,1,'H'],
+      [25,50,1,'I'],[26,50,4,'A'],[30,50,1,'S'],[31,50,1,'K'],[32,50,2,'N'],[34,50,1,'J'],[35,50,1,'N'],[36,50,2,'A'],
+      [38,50,1,'N'],[39,50,1,'D'],[40,50,1,'N'],[41,50,3,'A'],[44,50,2,'N'],[46,50,1,'K'],[47,50,1,'N'],[48,50,1,'D'],
+      [49,50,1,'N'],[50,50,3,'A'],[53,50,1,'N'],[54,50,1,'K'],[55,50,2,'N'],[57,50,2,'A'],[59,50,1,'N'],[60,50,1,'K'],
+      [61,50,1,'N'],[62,50,3,'A'],[65,50,1,'N'],[66,50,1,'K'],[67,50,1,'N'],[68,50,6,'A'],[74,50,1,'I'],[75,50,1,'H'],
+      [76,50,1,'I'],[77,50,7,'K'],[84,50,1,'J'],[85,50,1,'D'],[86,50,1,'B'],[87,50,1,'A'],[88,50,1,'Q'],[89,50,2,'I'],
+      [91,50,1,'D'],[8,51,1,'D'],[9,51,2,'K'],[11,51,1,'Q'],[12,51,1,'B'],[13,51,1,'M'],[14,51,1,'B'],[15,51,1,'D'],
+      [16,51,1,'Q'],[17,51,7,'K'],[24,51,2,'H'],[26,51,1,'J'],[27,51,1,'A'],[28,51,2,'N'],[30,51,1,'E'],[31,51,3,'C'],
+      [34,51,1,'N'],[35,51,1,'E'],[36,51,1,'N'],[37,51,4,'C'],[41,51,3,'N'],[44,51,2,'C'],[46,51,1,'E'],[47,51,3,'C'],
+      [50,51,1,'E'],[51,51,2,'N'],[53,51,1,'C'],[54,51,1,'E'],[55,51,1,'C'],[56,51,1,'E'],[57,51,2,'N'],[59,51,1,'C'],
+      [60,51,1,'E'],[61,51,2,'C'],[63,51,2,'N'],[65,51,1,'C'],[66,51,1,'E'],[67,51,2,'C'],[69,51,3,'N'],[72,51,1,'S'],
+      [73,51,1,'J'],[74,51,2,'H'],[76,51,7,'K'],[83,51,1,'Q'],[84,51,1,'D'],[85,51,1,'B'],[86,51,1,'M'],[87,51,1,'B'],
+      [88,51,1,'Q'],[89,51,2,'K'],[91,51,1,'D'],[8,52,1,'D'],[9,52,2,'K'],[11,52,1,'Q'],[12,52,1,'B'],[13,52,1,'M'],
+      [14,52,1,'B'],[15,52,1,'D'],[16,52,1,'I'],[17,52,1,'H'],[18,52,1,'I'],[19,52,5,'K'],[24,52,1,'I'],[25,52,1,'H'],
+      [26,52,1,'I'],[27,52,1,'N'],[28,52,1,'C'],[29,52,1,'H'],[30,52,4,'N'],[34,52,1,'H'],[35,52,1,'N'],[36,52,2,'H'],
+      [38,52,4,'N'],[42,52,2,'H'],[44,52,19,'N'],[63,52,2,'H'],[65,52,3,'N'],[68,52,3,'H'],[71,52,1,'C'],
+      [72,52,1,'E'],[73,52,1,'I'],[74,52,1,'H'],[75,52,1,'I'],[76,52,5,'K'],[81,52,3,'I'],[84,52,1,'D'],[85,52,1,'B'],
+      [86,52,2,'M'],[88,52,2,'Q'],[90,52,1,'K'],[91,52,1,'D'],[8,53,1,'D'],[9,53,2,'K'],[11,53,1,'Q'],[12,53,3,'D'],
+      [15,53,1,'K'],[16,53,3,'E'],[19,53,4,'H'],[23,53,2,'I'],[25,53,3,'H'],[28,53,1,'N'],[29,53,11,'R'],
+      [40,53,20,'P'],[60,53,11,'R'],[71,53,1,'N'],[72,53,3,'H'],[75,53,2,'I'],[77,53,3,'H'],[80,53,4,'E'],
+      [84,53,1,'K'],[85,53,3,'D'],[88,53,1,'J'],[89,53,1,'Q'],[90,53,1,'K'],[91,53,1,'D'],[8,54,1,'D'],[9,54,1,'K'],
+      [10,54,1,'Q'],[11,54,1,'J'],[12,54,2,'A'],[14,54,1,'D'],[15,54,1,'H'],[16,54,6,'C'],[22,54,2,'E'],[24,54,2,'H'],
+      [26,54,1,'K'],[27,54,1,'Q'],[28,54,1,'R'],[29,54,1,'L'],[30,54,10,'G'],[40,54,1,'P'],[41,54,18,'O'],
+      [59,54,1,'P'],[60,54,10,'G'],[70,54,1,'L'],[71,54,2,'R'],[73,54,1,'K'],[74,54,2,'H'],[76,54,2,'E'],
+      [78,54,6,'C'],[84,54,1,'H'],[85,54,1,'D'],[86,54,3,'A'],[89,54,1,'Q'],[90,54,1,'K'],[91,54,1,'D'],[8,55,1,'D'],
+      [9,55,1,'K'],[10,55,1,'Q'],[11,55,3,'A'],[14,55,1,'K'],[15,55,1,'E'],[16,55,6,'C'],[22,55,2,'E'],[24,55,1,'I'],
+      [25,55,1,'K'],[26,55,2,'G'],[28,55,1,'L'],[29,55,1,'G'],[30,55,10,'F'],[40,55,1,'P'],[41,55,1,'O'],
+      [42,55,3,'P'],[45,55,1,'O'],[46,55,1,'P'],[47,55,4,'O'],[51,55,1,'P'],[52,55,2,'O'],[54,55,3,'P'],[57,55,1,'C'],
+      [58,55,1,'O'],[59,55,1,'P'],[60,55,10,'F'],[70,55,2,'G'],[72,55,1,'L'],[73,55,1,'G'],[74,55,1,'K'],
+      [75,55,1,'I'],[76,55,2,'E'],[78,55,6,'C'],[84,55,1,'E'],[85,55,1,'K'],[86,55,1,'Q'],[87,55,2,'A'],[89,55,1,'Q'],
+      [90,55,1,'K'],[91,55,1,'D'],[8,56,1,'D'],[9,56,2,'Q'],[11,56,2,'A'],[13,56,1,'D'],[14,56,1,'H'],[15,56,7,'C'],
+      [22,56,1,'E'],[23,56,1,'K'],[24,56,1,'Q'],[25,56,1,'G'],[26,56,1,'L'],[27,56,1,'G'],[28,56,12,'F'],
+      [40,56,1,'P'],[41,56,1,'O'],[42,56,1,'P'],[43,56,3,'O'],[46,56,1,'P'],[47,56,3,'O'],[50,56,3,'P'],[53,56,1,'O'],
+      [54,56,1,'P'],[55,56,2,'O'],[57,56,1,'P'],[58,56,1,'O'],[59,56,1,'P'],[60,56,13,'F'],[73,56,2,'G'],
+      [75,56,1,'Q'],[76,56,1,'K'],[77,56,1,'H'],[78,56,7,'C'],[85,56,1,'E'],[86,56,1,'K'],[87,56,2,'A'],[89,56,1,'Q'],
+      [90,56,1,'K'],[91,56,1,'D'],[8,57,1,'D'],[9,57,1,'Q'],[10,57,1,'K'],[11,57,1,'N'],[12,57,1,'D'],[13,57,1,'N'],
+      [14,57,1,'E'],[15,57,6,'C'],[21,57,1,'E'],[22,57,1,'K'],[23,57,1,'T'],[24,57,1,'G'],[25,57,1,'L'],[26,57,1,'G'],
+      [27,57,4,'F'],[31,57,9,'J'],[40,57,1,'P'],[41,57,1,'O'],[42,57,3,'P'],[45,57,1,'O'],[46,57,1,'P'],[47,57,3,'O'],
+      [50,57,1,'P'],[51,57,1,'O'],[52,57,1,'P'],[53,57,1,'O'],[54,57,3,'P'],[57,57,1,'C'],[58,57,1,'O'],[59,57,1,'P'],
+      [60,57,4,'J'],[64,57,1,'A'],[65,57,4,'J'],[69,57,5,'F'],[74,57,1,'L'],[75,57,1,'G'],[76,57,1,'J'],[77,57,1,'K'],
+      [78,57,1,'E'],[79,57,7,'C'],[86,57,1,'H'],[87,57,1,'D'],[88,57,1,'N'],[89,57,1,'I'],[90,57,1,'K'],[91,57,1,'D'],
+      [8,58,1,'D'],[9,58,1,'Q'],[10,58,1,'K'],[11,58,3,'H'],[14,58,6,'C'],[20,58,1,'H'],[21,58,1,'K'],[22,58,1,'R'],
+      [23,58,1,'G'],[24,58,1,'L'],[25,58,1,'G'],[26,58,4,'F'],[30,58,1,'J'],[31,58,9,'A'],[40,58,1,'P'],[41,58,1,'O'],
+      [42,58,1,'P'],[43,58,3,'O'],[46,58,1,'P'],[47,58,3,'O'],[50,58,3,'P'],[53,58,1,'O'],[54,58,1,'P'],[55,58,4,'O'],
+      [59,58,1,'P'],[60,58,9,'A'],[69,58,1,'J'],[70,58,5,'F'],[75,58,1,'L'],[76,58,2,'R'],[78,58,1,'K'],[79,58,1,'H'],
+      [80,58,6,'C'],[86,58,1,'E'],[87,58,1,'N'],[88,58,1,'H'],[89,58,1,'I'],[90,58,1,'Q'],[91,58,1,'D'],[8,59,1,'D'],
+      [9,59,1,'Q'],[10,59,1,'K'],[11,59,1,'I'],[12,59,3,'E'],[15,59,4,'C'],[19,59,1,'I'],[20,59,1,'Q'],[21,59,1,'G'],
+      [22,59,2,'L'],[24,59,1,'G'],[25,59,4,'F'],[29,59,1,'J'],[30,59,10,'A'],[40,59,1,'P'],[41,59,1,'O'],
+      [42,59,1,'P'],[43,59,3,'O'],[46,59,3,'P'],[49,59,1,'O'],[50,59,1,'P'],[51,59,1,'O'],[52,59,1,'P'],[53,59,1,'O'],
+      [54,59,1,'P'],[55,59,4,'O'],[59,59,1,'P'],[60,59,10,'A'],[70,59,2,'J'],[72,59,4,'F'],[76,59,2,'L'],
+      [78,59,1,'R'],[79,59,1,'Q'],[80,59,1,'I'],[81,59,1,'E'],[82,59,3,'C'],[85,59,2,'E'],[87,59,1,'H'],[88,59,1,'I'],
+      [89,59,1,'K'],[90,59,1,'Q'],[91,59,1,'D'],[8,60,1,'D'],[9,60,1,'Q'],[10,60,2,'K'],[12,60,1,'I'],[13,60,3,'E'],
+      [16,60,2,'C'],[18,60,1,'I'],[19,60,1,'Q'],[20,60,1,'G'],[21,60,2,'L'],[23,60,1,'G'],[24,60,4,'F'],[28,60,1,'J'],
+      [29,60,11,'A'],[40,60,1,'P'],[41,60,18,'O'],[59,60,1,'P'],[60,60,12,'A'],[72,60,4,'F'],[76,60,1,'G'],
+      [77,60,2,'L'],[79,60,1,'R'],[80,60,1,'Q'],[81,60,1,'I'],[82,60,1,'E'],[83,60,1,'C'],[84,60,3,'E'],[87,60,1,'I'],
+      [88,60,2,'K'],[90,60,1,'Q'],[91,60,1,'D'],[8,61,1,'D'],[9,61,1,'J'],[10,61,4,'K'],[14,61,1,'I'],[15,61,2,'E'],
+      [17,61,1,'I'],[18,61,1,'F'],[19,61,1,'R'],[20,61,2,'L'],[22,61,5,'F'],[27,61,1,'J'],[28,61,12,'A'],
+      [40,61,20,'P'],[60,61,12,'A'],[72,61,2,'J'],[74,61,4,'F'],[78,61,2,'L'],[80,61,1,'R'],[81,61,1,'Q'],
+      [82,61,1,'K'],[83,61,2,'E'],[85,61,1,'H'],[86,61,4,'K'],[90,61,1,'J'],[91,61,1,'D'],[8,62,2,'D'],[10,62,4,'Q'],
+      [14,62,3,'K'],[17,62,1,'Q'],[18,62,1,'G'],[19,62,2,'L'],[21,62,6,'F'],[27,62,47,'A'],[74,62,5,'F'],
+      [79,62,2,'L'],[81,62,1,'G'],[82,62,1,'F'],[83,62,3,'K'],[86,62,1,'Q'],[87,62,1,'K'],[88,62,2,'Q'],[90,62,2,'D'],
+      [8,63,1,'T'],[9,63,1,'A'],[10,63,7,'R'],[17,63,1,'G'],[18,63,2,'L'],[20,63,2,'F'],[22,63,4,'G'],[26,63,1,'F'],
+      [27,63,47,'A'],[74,63,4,'G'],[78,63,2,'F'],[80,63,1,'G'],[81,63,2,'L'],[83,63,7,'R'],[90,63,2,'D'],[8,64,1,'T'],
+      [9,64,1,'A'],[10,64,1,'B'],[11,64,2,'F'],[13,64,2,'G'],[15,64,3,'L'],[18,64,3,'F'],[21,64,5,'L'],[26,64,1,'G'],
+      [27,64,2,'F'],[29,64,43,'A'],[72,64,1,'D'],[73,64,1,'A'],[74,64,5,'L'],[79,64,3,'F'],[82,64,3,'L'],
+      [85,64,1,'G'],[86,64,4,'F'],[90,64,2,'D'],[8,65,1,'T'],[9,65,1,'F'],[10,65,1,'A'],[11,65,12,'F'],[23,65,1,'G'],
+      [24,65,3,'L'],[27,65,2,'G'],[29,65,3,'D'],[32,65,1,'A'],[33,65,2,'D'],[35,65,1,'A'],[36,65,18,'D'],
+      [54,65,1,'A'],[55,65,1,'D'],[56,65,1,'A'],[57,65,13,'D'],[70,65,2,'A'],[72,65,1,'D'],[73,65,1,'B'],
+      [74,65,2,'L'],[76,65,2,'G'],[78,65,11,'F'],[89,65,1,'J'],[90,65,1,'F'],[91,65,1,'D'],[8,66,1,'T'],[9,66,1,'F'],
+      [10,66,1,'J'],[11,66,5,'F'],[16,66,1,'J'],[17,66,5,'F'],[22,66,1,'R'],[23,66,2,'L'],[25,66,45,'G'],
+      [70,66,1,'L'],[71,66,6,'G'],[77,66,1,'R'],[78,66,11,'F'],[89,66,1,'A'],[90,66,1,'J'],[91,66,1,'T'],[8,67,1,'T'],
+      [9,67,1,'F'],[10,67,1,'A'],[11,67,3,'J'],[14,67,7,'F'],[21,67,1,'R'],[22,67,56,'G'],[78,67,1,'L'],[79,67,8,'F'],
+      [87,67,2,'J'],[89,67,2,'A'],[91,67,1,'T'],[8,68,1,'T'],[9,68,1,'F'],[10,68,4,'A'],[14,68,7,'J'],[21,68,1,'L'],
+      [22,68,7,'G'],[29,68,7,'J'],[36,68,1,'G'],[37,68,10,'J'],[47,68,1,'F'],[48,68,7,'J'],[55,68,1,'G'],
+      [56,68,8,'J'],[64,68,1,'G'],[65,68,5,'J'],[70,68,1,'F'],[71,68,7,'G'],[78,68,1,'L'],[79,68,1,'J'],[80,68,1,'F'],
+      [81,68,6,'J'],[87,68,3,'A'],[90,68,1,'F'],[91,68,1,'T'],[8,69,2,'F'],[10,69,11,'A'],[21,69,1,'D'],[22,69,7,'J'],
+      [29,69,7,'A'],[36,69,1,'J'],[37,69,10,'A'],[47,69,1,'J'],[48,69,7,'A'],[55,69,1,'J'],[56,69,14,'A'],
+      [70,69,9,'J'],[79,69,1,'A'],[80,69,1,'J'],[81,69,9,'A'],[90,69,1,'F'],[91,69,1,'T'],[8,70,1,'T'],[9,70,1,'F'],
+      [10,70,80,'A'],[90,70,1,'F'],[91,70,1,'T'],[8,71,1,'T'],[9,71,1,'F'],[10,71,12,'A'],[77,71,1,'J'],
+      [78,71,12,'A'],[90,71,2,'F'],[8,72,1,'T'],[9,72,1,'F'],[10,72,11,'A'],[78,72,1,'F'],[79,72,11,'A'],
+      [90,72,1,'F'],[91,72,1,'T'],[8,73,1,'T'],[9,73,1,'F'],[10,73,11,'A'],[79,73,11,'A'],[90,73,1,'F'],[91,73,1,'T'],
+      [8,74,1,'T'],[9,74,1,'F'],[10,74,11,'A'],[79,74,11,'A'],[90,74,1,'F'],[91,74,1,'T'],[8,75,1,'T'],[9,75,1,'F'],
+      [10,75,11,'A'],[79,75,11,'A'],[90,75,1,'F'],[91,75,1,'T'],[8,76,1,'T'],[9,76,1,'F'],[10,76,10,'A'],
+      [20,76,1,'T'],[79,76,11,'A'],[90,76,1,'F'],[91,76,1,'T'],[8,77,2,'T'],[10,77,10,'A'],[20,77,1,'T'],
+      [79,77,11,'A'],[90,77,1,'F'],[91,77,1,'T'],[9,78,1,'T'],[10,78,9,'A'],[19,78,1,'T'],[80,78,1,'T'],[81,78,9,'A'],
+      [90,78,1,'T'],
+    ];
+    function drawCar() {
+      const cellSize = CAR_DISPLAY_W / CAR_COLS;
+      const carH = CAR_ROWS * cellSize;
+      const cx = W - CAR_DISPLAY_W - 8;
+      // Anchored to the canvas BOTTOM (not the grass top), so the car
+      // sits low in the bottom-right corner with only its very top edge
+      // just grazing the grass line - matching the original placement.
+      // Any extra height beyond the canvas bottom is simply clipped by
+      // the canvas edge (no visual artifact), same as before.
+      const cy = H - carH + 6;
+      q.save();
+      for (const [rx, ry, rw, letter] of CAR_RUNS) {
+        q.fillStyle = CAR_PALETTE[letter];
+        q.fillRect(cx + rx * cellSize, cy + ry * cellSize, rw * cellSize, cellSize);
+      }
+      q.restore();
+    }
+    function drawBranding() {
+      // Bottom-left area: "Powered by" text comes FIRST (leftmost), the
+      // Toyota logo sits immediately after it - reading left-to-right.
+      const logoW = 48;
+      const logoH = Math.round(logoW * TOYOTA_ROWS / TOYOTA_COLS);
+      const ly = H - logoH - 6;
+      const textX = 8;
+      const textY = Math.round(ly + logoH / 2);
+      // Crisp "Powered by": integer baseline + hard 1px drop-shadow.
+      q.save();
+      q.font = '600 14px Arial';
+      q.textAlign = 'left';
+      q.textBaseline = 'middle';
+      q.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      q.fillText('Powered by', textX + 1, textY + 1);
+      q.fillStyle = '#ffffff';
+      q.fillText('Powered by', textX, textY);
+      const textW = q.measureText('Powered by').width;
+      q.restore();
+      // Smooth downscale of the traced emblem for an accurate, clean logo.
+      const lx = Math.round(textX + textW + 6);
+      q.save();
+      q.imageSmoothingEnabled = true;
+      q.imageSmoothingQuality = 'high';
+      q.drawImage(TOYOTA_SPRITE, lx, ly, logoW, logoH);
+      q.restore();
+    }
+    /* -------------------- SCENERY -------------------- */
+    /* -------------------- DAY / NIGHT CYCLE (GRADUAL) --------------------
+     * The target phase flips every 100 points (0-99 day, 100-199 night,
+     * 200-299 day, ...). Instead of snapping instantly, `nightAmount` is a
+     * continuous 0(day)-1(night) value that EASES toward that target every
+     * frame, so the sky/sun-moon/stars/clouds all cross-fade smoothly.
+     *
+     * >>> NIGHT_TRANSITION_SPEED is the single knob for how fast that fade
+     * happens. It's a "per-frame catch-up rate" (0 to 1):
+     *   - LOWER value  (e.g. 0.006) = slower, more gradual, longer fade.
+     *   - HIGHER value (e.g. 0.05)  = faster, snappier transition.
+     *   - 1                          = effectively instant (old hard-cut look).
+     * At the default 0.015, the fade takes roughly 5-6 real seconds.
+     */
+    const NIGHT_TRANSITION_SPEED = 0.015;
+    let nightAmount = 0;
+    function nightTarget() { return (Math.floor(score / 100) % 2 === 1) ? 1 : 0; }
+    function lerpHex(hexA, hexB, t) {
+      const a = parseInt(hexA.slice(1), 16), b = parseInt(hexB.slice(1), 16);
+      const ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+      const br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+      const r = Math.round(ar + (br - ar) * t), g = Math.round(ag + (bg - ag) * t), bl = Math.round(ab + (bb - ab) * t);
+      return 'rgb(' + r + ',' + g + ',' + bl + ')';
+    }
+    const STARS = Array.from({ length: 45 }, () => ({
+      x: Math.random() * W,
+      y: Math.random() * (H - GND - 30),
+      r: 0.6 + Math.random() * 1.3,
+      tw: Math.random() * Math.PI * 2
+    }));
+    function sky() {
+      const t = nightAmount;
+      const g = q.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, lerpHex('#4ec0e0', '#0a0e24', t));
+      g.addColorStop(0.6, lerpHex('#70c5ce', '#1a2247', t));
+      g.addColorStop(1, lerpHex('#b6e6c9', '#33395f', t));
+      q.fillStyle = g; q.fillRect(0, 0, W, H);
+      // Stars fade in as night approaches.
+      if (t > 0.01) {
+        for (const s of STARS) {
+          const tw = 0.55 + 0.45 * Math.sin(frame * 0.04 + s.tw);
+          q.fillStyle = 'rgba(255,255,255,' + (tw * 0.9 * t).toFixed(2) + ')';
+          q.beginPath(); q.arc(s.x, s.y, s.r, 0, 7); q.fill();
+        }
+      }
+      // Sun and moon cross-fade in place at the same spot.
+      if (t < 0.99) {
+        q.globalAlpha = 1 - t;
+        q.fillStyle = 'rgba(255, 247, 186, 0.85)';
+        q.beginPath(); q.arc(56, 64, 27, 0, 7); q.fill();
+        q.globalAlpha = 1;
+      }
+      if (t > 0.01) {
+        q.globalAlpha = t;
+        q.fillStyle = 'rgba(232,234,255,0.95)';
+        q.beginPath(); q.arc(56, 64, 24, 0, 7); q.fill();
+        q.fillStyle = 'rgba(180,185,215,0.55)';
+        q.beginPath(); q.arc(48, 56, 4.5, 0, 7); q.fill();
+        q.beginPath(); q.arc(63, 70, 3.2, 0, 7); q.fill();
+        q.beginPath(); q.arc(58, 54, 2.4, 0, 7); q.fill();
+        q.globalAlpha = 1;
+      }
+    }
+    function cloud(o) {
+      const t = nightAmount;
+      const r = Math.round(255 + (205 - 255) * t), g2 = Math.round(255 + (210 - 255) * t), b = Math.round(255 + (235 - 255) * t);
+      const a = 0.85 + (0.45 - 0.85) * t;
+      q.fillStyle = 'rgba(' + r + ',' + g2 + ',' + b + ',' + a.toFixed(2) + ')';
+      q.beginPath();
+      q.arc(o.x, o.y, o.r, 0, 7);
+      q.arc(o.x + o.r, o.y + 4, o.r * 0.8, 0, 7);
+      q.arc(o.x - o.r, o.y + 4, o.r * 0.7, 0, 7);
+      q.fill();
+    }
+    function pipe(p) {
+      const capH = 18, capOver = 4;
+      const g = q.createLinearGradient(p.x, 0, p.x + PW, 0);
+      g.addColorStop(0, '#347516'); g.addColorStop(0.3, '#79c948'); g.addColorStop(0.5, '#a6e86d');
+      g.addColorStop(0.7, '#79c948'); g.addColorStop(1, '#285b10');
+      const seg = (yTop, h) => {
+        q.fillStyle = g; q.fillRect(p.x, yTop, PW, h);
+        q.fillStyle = 'rgba(255,255,255,0.25)'; q.fillRect(p.x + 7, yTop, 5, h);
+        q.fillStyle = 'rgba(0,0,0,0.18)'; q.fillRect(p.x + PW - 7, yTop, 7, h);
+      };
+      const cap = (yTop) => {
+        q.fillStyle = g; q.fillRect(p.x - capOver, yTop, PW + capOver * 2, capH);
+        q.fillStyle = 'rgba(255,255,255,0.3)'; q.fillRect(p.x - capOver, yTop, PW + capOver * 2, 4);
+        q.fillStyle = 'rgba(0,0,0,0.25)'; q.fillRect(p.x - capOver, yTop + capH - 3, PW + capOver * 2, 3);
+      };
+      seg(0, p.g - capH); cap(p.g - capH);
+      seg(p.g + GAP + capH, H - (p.g + GAP + capH)); cap(p.g + GAP);
+    }
+    function ground(off) {
+      const gy = H - GND;
+      q.fillStyle = '#c8b45a'; q.fillRect(0, gy, W, GND);
+      q.fillStyle = '#ded895'; q.fillRect(0, gy, W, 6);
+      q.fillStyle = '#70bd3e'; q.fillRect(0, gy - 4, W, 8);
+      q.fillStyle = '#4f9227';
+      // NOTE: uses the same "off" (== SPD-scaled scroll) as everything
+      // else, so grass moves in lockstep with the pipes.
+      for (let i = -1; i < W / 13 + 1; i++) {
+        const gx = ((i * 13 - off) % (W + 13) + W + 13) % (W + 13) - 13;
+        q.beginPath(); q.moveTo(gx, gy); q.lineTo(gx + 4, gy - 6); q.lineTo(gx + 7, gy); q.fill();
+      }
+      q.fillStyle = 'rgba(0,0,0,0.08)';
+      for (let i = 0; i < W / 20; i++) {
+        const dx = ((i * 20 - off) % (W + 20) + W + 20) % (W + 20);
+        q.fillRect(dx, gy + 18 + ((i * 7) % 20), 4, 4);
+      }
+    }
+    /* -------------------- GAME FLOW -------------------- */
+    function reset() {
+      y = H / 2; v = 0; score = 0; mode = 0; shake = 0; birdAngle = 0;
+      pipes = [0, 150, 300].map((d) => ({ x: W + d, g: 65 + Math.random() * (H - GND - 260), scored: false }));
+      clouds = [0, 1, 2, 3].map(() => ({ x: Math.random() * W, y: 30 + Math.random() * 130, r: 13 + Math.random() * 12, s: 0.2 + Math.random() * 0.25 }));
+      restartMusic();
+    }
+    function flap() {
+      initAudio();
+      if (ac.state === 'suspended') ac.resume();
+      if (mode === 2) { reset(); mode = 1; restartMusic(); }
+      else if (mode === 0) { mode = 1; restartMusic(); }
+      v = FLAP; sndFlap();
+    }
+    function die() {
+      if (mode !== 1) return;
+      mode = 2; shake = 9;
+      best = Math.max(best, score);
+      localStorage.flappyBest = best;
+      sndHit(); fadeMusic();
+      // Give the score modal a beat after the hit effects, then let the
+      // player submit to the shared leaderboard.
+      if (score > 0) setTimeout(() => openScoreModal(score), 450);
+    }
+    addEventListener('keydown', (e) => {
+      // Don't hijack Space (or any key) while the player is typing their
+      // name into the modal input - otherwise a space in their name, or
+      // just pressing Space to type, would also flap/restart the game.
+      if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+      if (e.code === 'Space') { e.preventDefault(); flap(); }
+    });
+    cv.addEventListener('mousedown', flap);
+    cv.addEventListener('touchstart', (e) => { e.preventDefault(); flap(); }, { passive: false });
+    function loop(now) {
+      /* -------------------- DELTA-TIME NORMALIZATION --------------------
+       * requestAnimationFrame fires at whatever refresh rate the display/
+       * browser gives us (60Hz, 90Hz, 120Hz, or throttled way down on a
+       * background/low-power tab) - NOT a fixed rate. Without this, every
+       * per-frame increment below (gravity, pipe speed, scroll, etc.) would
+       * run faster or slower depending purely on hardware. `dt` expresses
+       * elapsed real time as a multiple of one 60fps frame (~16.67ms), so
+       * at 120Hz dt~=0.5 and at 30fps dt~=2, keeping actual game speed
+       * constant everywhere. Capped at 3 to avoid big jumps after the tab
+       * was backgrounded.
+       */
+      if (lastTime === null) lastTime = now;
+      dt = Math.min((now - lastTime) / (1000 / 60), 3);
+      lastTime = now;
+      frame += dt;
+      nightAmount += (nightTarget() - nightAmount) * (1 - Math.pow(1 - NIGHT_TRANSITION_SPEED, dt));
+      const sx = shake ? (Math.random() - 0.5) * shake : 0;
+      const sy = shake ? (Math.random() - 0.5) * shake : 0;
+      shake *= Math.pow(0.84, dt);
+      q.save(); q.translate(sx, sy);
+      sky();
+      for (const o of clouds) {
+        if (mode !== 2) o.x -= o.s * dt;
+        if (o.x < -40) o.x = W + 35;
+        cloud(o);
+      }
+      for (const p of pipes) {
+        if (mode === 1) {
+          p.x -= SPD * dt;
+          if (p.x + PW < 0) { p.x += 450; p.g = 65 + Math.random() * (H - GND - 260); p.scored = false; }
+          if (!p.scored && p.x + PW < 66) { p.scored = true; score++; sndScore(); }
+        }
+        pipe(p);
+        if (66 + 10 > p.x && 66 - 10 < p.x + PW && (y - 10 < p.g || y + 10 > p.g + GAP)) die();
+      }
+      if (mode === 1) { v += GRAVITY * dt; y += v * dt; gOff += SPD * dt; playMusic(); }
+      if (y + 11 > H - GND) { y = H - GND - 11; die(); }
+      if (y < 11) { y = 11; v = 0; }
+      ground(gOff);
+      bird();
+      q.textAlign = 'center';
+      q.fillStyle = '#fff';
+      q.strokeStyle = 'rgba(0,0,0,0.45)';
+      q.lineWidth = 4;
+      q.font = 'bold 40px Arial';
+      q.strokeText(score, W / 2, 58); q.fillText(score, W / 2, 58);
+      q.font = '16px Arial';
+      if (mode === 0) {
+        q.strokeText('Tap / Space to start', W / 2, H / 2 + 90);
+        q.fillText('Tap / Space to start', W / 2, H / 2 + 90);
+      }
+      if (mode === 2) {
+        q.fillStyle = 'rgba(0,0,0,0.35)'; q.fillRect(40, H / 2 - 70, W - 80, 150);
+        q.fillStyle = '#fff';
+        q.font = 'bold 26px Arial'; q.fillText('Game Over', W / 2, H / 2 - 30);
+        q.font = '16px Arial';
+        q.fillText('Score: ' + score, W / 2, H / 2);
+        q.fillText('Best: ' + best, W / 2, H / 2 + 24);
+        q.fillText('Tap / Space to retry', W / 2, H / 2 + 56);
+      }
+      drawCar();
+      drawBranding();
+      q.restore();
+      requestAnimationFrame(loop);
+    }
+    reset();
+    requestAnimationFrame(loop);
+    // Fire the one-time "submit your existing best" check shortly after
+    // load (small delay so it doesn't visually collide with the canvas
+    // still settling into place on first paint).
+    setTimeout(maybePromptExistingBest, 600);
+  </script>
+</body>
+</html>
