@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>Flappy Deluxe v25</title>
+  <title>Flappy Deluxe v27</title>
   <style>
     html, body {
       margin: 0;
@@ -29,6 +29,13 @@
       justify-content: center;
       touch-action: none;
     }
+    /* Shrink-wraps to the canvas so anything positioned absolute inside
+       anchors to the GAME's corner, not the browser window's corner. */
+    #gameBox {
+      position: relative;
+      display: inline-block;
+      line-height: 0;
+    }
     canvas {
       display: block;
       box-sizing: border-box;
@@ -37,7 +44,6 @@
       touch-action: none;
       box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
     }
-    /* Edge-to-edge on small/phone screens - true fullscreen feel, no frame */
     @media (max-width: 640px), (max-height: 640px) {
       canvas {
         border: none;
@@ -45,19 +51,8 @@
         box-shadow: none;
       }
     }
-    /* -------------------- LEADERBOARD UI --------------------
-     * A trophy button opens the leaderboard. Score submission is now
-     * fully AUTOMATIC (no per-run modal/button) - the only manual step
-     * left is a ONE-TIME name entry so the leaderboard has something to
-     * label each row with. That name is remembered locally forever after.
-     *
-     * position: FIXED (not absolute) so the button is guaranteed to stay
-     * pinned to the actual browser viewport's top-right corner - it does
-     * not drift if the canvas itself is smaller/centered/letterboxed
-     * (e.g. on a wide PC window).
-     */
     #leaderboardBtn {
-      position: fixed;
+      position: absolute;
       top: 9px;
       right: 9px;
       border: 0;
@@ -130,7 +125,6 @@
     .modal-list { text-align: left; max-height: 260px; overflow-y: auto; margin: 12px 0; font-size: 14px; }
     .lb-row { display: flex; justify-content: space-between; padding: 6px 4px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
     .lb-row:nth-child(odd) { background: rgba(255, 255, 255, 0.03); }
-    /* "Playing as: X (change)" strip shown inside the leaderboard modal. */
     #leaderboardNameRow {
       font-size: 13px;
       color: #cfe8ff;
@@ -144,8 +138,6 @@
       cursor: pointer;
       margin-left: 6px;
     }
-    /* Small non-blocking toast used to silently confirm/flag automatic
-       background score submissions, without requiring any interaction. */
     #toast {
       position: fixed;
       bottom: 18px;
@@ -167,15 +159,16 @@
 </head>
 <body>
   <div id="wrap">
-    <canvas id="c" width="320" height="480"></canvas>
-    <button id="leaderboardBtn">&#127942;</button>
+    <div id="gameBox">
+      <canvas id="c" width="320" height="480"></canvas>
+      <button id="leaderboardBtn">&#127942;</button>
+    </div>
   </div>
 
   <!-- ONE-TIME onboarding step: only ever shown if no name is saved yet
        (brand new device), or when the player taps "change" inside the
-       leaderboard view. This is the ONLY manual step in the whole flow -
-       every actual score submission afterwards happens automatically in
-       the background with no prompt at all. -->
+       leaderboard view. Every subsequent score submission from then on
+       happens fully automatically in the background - no prompt, ever. -->
   <div id="nameModal" class="modal-backdrop">
     <div class="modal-box">
       <div class="modal-title">Welcome!</div>
@@ -188,10 +181,6 @@
     </div>
   </div>
 
-  <!-- Opened via the trophy button - shows the top scores from everyone
-       who has submitted to this same shared leaderboard, deduped so each
-       person's HIGHEST score is the only one shown (Supabase itself still
-       keeps every individual run/score ever submitted). -->
   <div id="leaderboardModal" class="modal-backdrop">
     <div class="modal-box">
       <div class="modal-title">&#127942; Leaderboard</div>
@@ -208,16 +197,6 @@
     const q = cv.getContext('2d');
     const W = 320, H = 480, GND = 60;
     const GRAVITY = 0.45, FLAP = -7.5, GAP = 125, PW = 54, SPD = 2;
-    /* -------------------- RESPONSIVE FULLSCREEN --------------------
-     * Internal render resolution stays a crisp 320x480 (all game-logic
-     * coordinates untouched). We only scale the CSS display size:
-     *  - phone (portrait): scales up to fill almost the entire screen
-     *    edge-to-edge (frame/shadow removed via the media query above).
-     *  - PC / wide browser window: scales up to fill the full window
-     *    height (or width, whichever is the limiting dimension) while
-     *    keeping the 320:480 aspect ratio locked, so the art is never
-     *    stretched/distorted - any leftover space is simply letterboxed.
-     */
     function fitCanvas() {
       const vv = window.visualViewport;
       const vw = vv ? vv.width : window.innerWidth;
@@ -225,19 +204,6 @@
       const scale = Math.min(vw / W, vh / H);
       cv.style.width = Math.floor(W * scale) + 'px';
       cv.style.height = Math.floor(H * scale) + 'px';
-      /* -------------------- HIGH-DPI (RETINA) SHARPNESS --------------------
-       * Previously the canvas' actual pixel buffer stayed a fixed 320x480
-       * and was just stretched larger via CSS to fill the screen - that
-       * stretch (bitmap upscaling) is what blurred fine detail like the
-       * license-plate text and the score/"Game Over" text, even though the
-       * game's drawing coordinates were untouched. Here we size the REAL
-       * pixel buffer to match physical device pixels (CSS size x
-       * devicePixelRatio), then rescale the drawing context so all the
-       * existing game code - which still thinks in the original 320x480
-       * coordinate space - keeps working unchanged, but now renders at
-       * full native display resolution instead of being upscaled after
-       * the fact.
-       */
       const dpr = Math.min(window.devicePixelRatio || 1, 3);
       const bw = Math.round(W * scale * dpr);
       const bh = Math.round(H * scale * dpr);
@@ -254,13 +220,23 @@
     let y, v, pipes, score, mode, frame = 0, gOff = 0, clouds, shake = 0;
     let lastTime = null, dt = 1;
     let birdAngle = 0;
-    let best = +(localStorage.flappyBest || 0);
-    /* -------------------- SUPABASE LEADERBOARD --------------------
-     * Supabase gives every project a free hosted Postgres database with
-     * an auto-generated REST API - reachable with plain fetch() calls,
-     * no SDK/script tag needed, keeping this a single self-contained
-     * HTML file.
+    /* -------------------- "BEST" IS NOW SOURCED FROM SUPABASE, NOT localStorage --------------------
+     * Previously "best" lived only in localStorage, which is tied to the
+     * exact web origin (domain/file path) the page is loaded from. Moving
+     * hosting (local file -> GitHub Pages -> a different host, etc.) gave
+     * everyone a brand new, empty localStorage bucket - which is exactly
+     * why everyone's saved best appeared to "reset" after this rollout.
      *
+     * Fix: "best" is now looked up LIVE from Supabase by player NAME, not
+     * by device/browser/localStorage. This means:
+     *  - It survives any future hosting/domain change.
+     *  - It's automatically synced across every device the same name is
+     *    used on (phone + PC both show the same true best).
+     *  - It reflects every score anyone (including you, manually) has
+     *    ever inserted into the scores table for that name.
+     */
+    let best = 0;
+    /* -------------------- SUPABASE LEADERBOARD --------------------
      * NOTE: the "anon public" / "publishable" key below is SAFE to embed
      * in client-side code and share - it can only do what your Row Level
      * Security policies allow (insert + read on the scores table). Your
@@ -270,11 +246,9 @@
     const SUPABASE_URL = 'https://zcikcybrulwhbclsjjhb.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_3bdAzSXPbVeS6w0MD_S2sA_GapTsNB5';
 
-    // Every call is a plain INSERT (never an update/upsert) - so Supabase
+    // Every call is a plain INSERT (never an update/upsert) - Supabase
     // keeps a full history of every single run ever submitted, for every
-    // name, forever. The leaderboard VIEW below is what narrows that
-    // full history down to "only show each person's best" - the
-    // underlying data is never trimmed or overwritten.
+    // name, forever. Nothing is ever overwritten or deleted by the game.
     async function submitScoreToSupabase(nickname, scoreValue) {
       try {
         const res = await fetch(SUPABASE_URL + '/rest/v1/scores', {
@@ -295,21 +269,45 @@
       }
     }
 
+    /* -------------------- FETCH ONE PLAYER'S HIGHEST SCORE --------------------
+     * Queries Supabase directly for the single highest score row matching
+     * this exact name (case-insensitive via "ilike"), sorted descending,
+     * limited to 1 row. This is what powers the "Best: X" shown on every
+     * Game Over screen now - it reflects the TRUE all-time best for that
+     * name across every device/session that ever submitted a score,
+     * including scores you insert manually via the Supabase dashboard.
+     */
+    async function fetchPlayerBest(nickname) {
+      try {
+        const url = SUPABASE_URL + '/rest/v1/scores?name=ilike.' +
+          encodeURIComponent(nickname) + '&select=score&order=score.desc&limit=1';
+        const res = await fetch(url, {
+          headers: {
+            'apikey': SUPABASE_ANON_KEY,
+            'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
+          }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const rows = await res.json();
+        return (rows && rows.length) ? rows[0].score : 0;
+      } catch (err) {
+        console.error('Supabase fetchPlayerBest failed:', err);
+        return null; // null = "couldn't check", distinct from a real 0
+      }
+    }
+
+    async function refreshBestFromSupabase() {
+      const nm = currentName();
+      if (!nm) return;
+      const result = await fetchPlayerBest(nm);
+      if (result !== null) best = Math.max(best, result);
+    }
+
     async function fetchLeaderboard() {
       try {
-        /* -------------------- DEDUPE BY NAME (SHOW ONLY EACH PLAYER'S BEST) --------------------
-         * Supabase's REST API doesn't do a "GROUP BY highest score per
-         * name" in one simple call without writing a SQL view/RPC, so we
-         * pull a larger pool (top 200 rows, already sorted highest-first)
-         * and then dedupe client-side: since the rows arrive in
-         * descending score order, the FIRST time we encounter a given
-         * name is automatically that person's highest score. Every
-         * later (lower) row for that same name is simply skipped for
-         * DISPLAY purposes only - all of those rows still permanently
-         * exist in the underlying Supabase table.
-         * Names are compared trimmed + lowercased so "Peter" and "peter "
-         * are treated as the same person.
-         */
+        /* Pulls the top 200 rows (sorted highest-first) and dedupes
+         * client-side so only each name's single highest row is shown -
+         * every individual row still permanently exists in Supabase. */
         const url = SUPABASE_URL + '/rest/v1/scores?select=name,score&order=score.desc&limit=200';
         const res = await fetch(url, {
           headers: {
@@ -318,7 +316,7 @@
           }
         });
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        const rows = await res.json(); // Supabase returns a plain JSON array of rows.
+        const rows = await res.json();
         const seen = new Set();
         const deduped = [];
         for (const row of rows) {
@@ -335,10 +333,6 @@
       }
     }
 
-    /* -------------------- TOAST (non-blocking status) --------------------
-     * Purely informational - confirms an automatic background submission
-     * succeeded or failed, WITHOUT requiring any tap/click. Auto-hides.
-     */
     const toastEl = document.getElementById('toast');
     let toastTimer = null;
     function showToast(msg) {
@@ -358,7 +352,7 @@
       return (localStorage.flappyName || '').trim();
     }
 
-    let onNameSaved = null; // optional one-shot callback after a fresh save
+    let onNameSaved = null;
     function openNameModal(afterSaveCallback) {
       onNameSaved = afterSaveCallback || null;
       nameModalInput.value = currentName();
@@ -383,18 +377,20 @@
       if (onNameSaved) { const cb = onNameSaved; onNameSaved = null; cb(); }
     };
 
-    // Fires automatically in the background - no modal, no button, no
-    // interaction required. Every call is a brand new row in Supabase
-    // (full history per name is always preserved there).
+    // Fires automatically in the background after every run - no modal,
+    // no button, no interaction required. Every call is a brand new row
+    // in Supabase (full history per name is always preserved there).
     function silentSubmit(scoreValue) {
       const nm = currentName();
       if (!nm) return;
       submitScoreToSupabase(nm, scoreValue).then((ok) => {
         showToast(ok ? ('Score submitted: ' + scoreValue) : 'Could not submit score');
+        // Reconcile with the true cross-device max afterward, in case
+        // another device under the same name has an even higher score.
+        if (ok) refreshBestFromSupabase();
       });
     }
 
-    // ---- Leaderboard modal wiring ----
     const leaderboardBtn = document.getElementById('leaderboardBtn');
     const leaderboardModal = document.getElementById('leaderboardModal');
     const leaderboardList = document.getElementById('leaderboardList');
@@ -407,7 +403,11 @@
     }
     lbChangeNameLink.onclick = (e) => {
       e.stopPropagation();
-      openNameModal(() => updateLeaderboardNameRow());
+      openNameModal(() => {
+        updateLeaderboardNameRow();
+        best = 0;
+        refreshBestFromSupabase();
+      });
     };
 
     leaderboardBtn.onclick = async (e) => {
@@ -431,32 +431,24 @@
     };
     closeLeaderboardBtn.onclick = (e) => { e.stopPropagation(); leaderboardModal.style.display = 'none'; };
 
-    /* -------------------- STARTUP: one-time name capture + migrate existing best --------------------
+    /* -------------------- STARTUP: one-time name capture + pull true best --------------------
      * - Brand new device (no name saved yet): show the ONE-TIME name
-     *   modal. Once saved, if a pre-existing local best score is sitting
-     *   in localStorage (e.g. from playing an older version before the
-     *   leaderboard existed), silently submit it automatically.
+     *   modal. Once saved, immediately pull that name's true best score
+     *   from Supabase (which may already be non-zero if you manually
+     *   inserted their verbally-reported score, or they played on
+     *   another device before).
      * - Returning device that already has a name saved: skip the modal
-     *   entirely. If a local best hasn't been migrated to the leaderboard
-     *   yet, submit it automatically in the background right away.
-     * - Every subsequent game-over submission (in die() below) is fully
-     *   automatic from this point on - no modal ever appears again.
+     *   entirely, just pull the current best from Supabase right away.
      */
-    function migrateExistingBestIfNeeded() {
-      if (best > 0 && !localStorage.flappyBestPrompted) {
-        localStorage.flappyBestPrompted = '1';
-        silentSubmit(best);
-      }
-    }
     setTimeout(() => {
       if (!currentName()) {
-        openNameModal(() => migrateExistingBestIfNeeded());
+        openNameModal(() => refreshBestFromSupabase());
       } else {
-        migrateExistingBestIfNeeded();
+        refreshBestFromSupabase();
       }
     }, 600);
 
-    /* -------------------- AUDIO: quiet music bus + punchy sfx bus -------------------- */
+    /* -------------------- AUDIO -------------------- */
     let ac, musicBus, sfxBus, muted = false;
     const MUSIC_VOL = 0.08, SFX_VOL = 0.30;
     function initAudio() {
@@ -518,13 +510,7 @@
       musicBus.gain.setValueAtTime(musicBus.gain.value, t);
       musicBus.gain.linearRampToValueAtTime(0, t + 0.4);
     }
-    /* -------------------- BIRD --------------------
-     * Two flap frames (wing-down = pixel-identical to the reference; wing-up
-     * raises the wing with the YELLOW body drawn behind it, so no holes show).
-     * Each frame is pre-baked to an offscreen canvas of true logical pixels.
-     * Up/down motion ROTATES that crisp sprite (smoothing off) so it is never
-     * stretched.
-     */
+    /* -------------------- BIRD -------------------- */
     const BIRD_PX = 3;
     const BIRD_PALETTE = {
       K: '#000000', P: '#000000',
@@ -593,12 +579,7 @@
       q.drawImage(sprite, -sprite.width / 2, -sprite.height / 2);
       q.restore();
     }
-    /* -------------------- TOYOTA BRANDING --------------------
-     * The emblem is the REAL logo, traced pixel-by-pixel from the source image:
-     * red pixels were detected and mapped to a 60x39 logical grid. It is
-     * baked once to an offscreen canvas, then drawn scaled down with smoothing
-     * for a clean, accurate mark - no hand-drawn ellipses, no embedded PNG.
-     */
+    /* -------------------- TOYOTA BRANDING -------------------- */
     const TOYOTA_COLS = 60;
     const TOYOTA_ROWS = 39;
     const TOYOTA_GRID = [
@@ -657,47 +638,16 @@
       }
       return off;
     })();
-    /* -------------------- RAV4 SPRITE (VECTOR) --------------------
-     * Instead of baking to a small offscreen bitmap and stretching that
-     * bitmap up/down (which is what caused the earlier blur), the car is
-     * stored as a run-length-encoded list of flat-color rectangles - the
-     * SAME technique the grass tufts/pipes use (plain q.fillRect() calls
-     * drawn straight onto the live canvas every frame). There is no raster
-     * resize step at all, so it stays perfectly crisp - including the
-     * "FLAP" license plate text - at ANY display size.
-     *
-     * >>> CAR_DISPLAY_W is the single knob for how big the car is drawn.
-     * Since this is true vector drawing (not a bitmap), you can freely
-     * make this bigger or smaller with zero quality loss/blur.
-     */
+    /* -------------------- RAV4 SPRITE (VECTOR) -------------------- */
     const CAR_COLS = 100;
     const CAR_ROWS = 82;
     const CAR_DISPLAY_W = 84;
     const CAR_PALETTE = {
-      A: '#48494a',
-      B: '#666667',
-      C: '#feea8d',
-      D: '#575654',
-      E: '#fcdf66',
-      F: '#c02319',
-      G: '#e54634',
-      H: '#efc43b',
-      I: '#d69f1b',
-      J: '#69473b',
-      K: '#b78014',
-      L: '#fd7054',
-      M: '#908565',
-      N: '#bba050',
-      O: '#ffffff',
-      P: '#030000',
-      Q: '#895610',
-      R: '#e2723d',
-      S: '#8c712c',
-      T: '#4e120b'
+      A: '#48494a', B: '#666667', C: '#feea8d', D: '#575654', E: '#fcdf66',
+      F: '#c02319', G: '#e54634', H: '#efc43b', I: '#d69f1b', J: '#69473b',
+      K: '#b78014', L: '#fd7054', M: '#908565', N: '#bba050', O: '#ffffff',
+      P: '#030000', Q: '#895610', R: '#e2723d', S: '#8c712c', T: '#4e120b'
     };
-    // Each entry: [colStart, row, colSpan, paletteLetter] - a run of
-    // same-color pixels merged into one rectangle (1,479 runs total,
-    // reconstructed losslessly from the original 100x82 pixel grid).
     const CAR_RUNS = [
       [48,3,1,'T'],[49,3,2,'A'],[51,3,1,'P'],[26,4,5,'A'],[31,4,1,'P'],[35,4,30,'A'],[68,4,1,'P'],[69,4,5,'A'],
       [24,5,1,'P'],[25,5,1,'A'],[26,5,5,'D'],[31,5,4,'A'],[35,5,3,'F'],[38,5,27,'G'],[65,5,2,'F'],[67,5,2,'A'],
@@ -899,11 +849,6 @@
       const cellSize = CAR_DISPLAY_W / CAR_COLS;
       const carH = CAR_ROWS * cellSize;
       const cx = W - CAR_DISPLAY_W - 8;
-      // Anchored to the canvas BOTTOM (not the grass top), so the car
-      // sits low in the bottom-right corner with only its very top edge
-      // just grazing the grass line - matching the original placement.
-      // Any extra height beyond the canvas bottom is simply clipped by
-      // the canvas edge (no visual artifact), same as before.
       const cy = H - carH + 6;
       q.save();
       for (const [rx, ry, rw, letter] of CAR_RUNS) {
@@ -913,14 +858,11 @@
       q.restore();
     }
     function drawBranding() {
-      // Bottom-left area: "Powered by" text comes FIRST (leftmost), the
-      // Toyota logo sits immediately after it - reading left-to-right.
       const logoW = 48;
       const logoH = Math.round(logoW * TOYOTA_ROWS / TOYOTA_COLS);
       const ly = H - logoH - 6;
       const textX = 8;
       const textY = Math.round(ly + logoH / 2);
-      // Crisp "Powered by": integer baseline + hard 1px drop-shadow.
       q.save();
       q.font = '600 14px Arial';
       q.textAlign = 'left';
@@ -931,7 +873,6 @@
       q.fillText('Powered by', textX, textY);
       const textW = q.measureText('Powered by').width;
       q.restore();
-      // Smooth downscale of the traced emblem for an accurate, clean logo.
       const lx = Math.round(textX + textW + 6);
       q.save();
       q.imageSmoothingEnabled = true;
@@ -939,20 +880,7 @@
       q.drawImage(TOYOTA_SPRITE, lx, ly, logoW, logoH);
       q.restore();
     }
-    /* -------------------- SCENERY -------------------- */
-    /* -------------------- DAY / NIGHT CYCLE (GRADUAL) --------------------
-     * The target phase flips every 100 points (0-99 day, 100-199 night,
-     * 200-299 day, ...). Instead of snapping instantly, `nightAmount` is a
-     * continuous 0(day)-1(night) value that EASES toward that target every
-     * frame, so the sky/sun-moon/stars/clouds all cross-fade smoothly.
-     *
-     * >>> NIGHT_TRANSITION_SPEED is the single knob for how fast that fade
-     * happens. It's a "per-frame catch-up rate" (0 to 1):
-     *   - LOWER value  (e.g. 0.006) = slower, more gradual, longer fade.
-     *   - HIGHER value (e.g. 0.05)  = faster, snappier transition.
-     *   - 1                          = effectively instant (old hard-cut look).
-     * At the default 0.015, the fade takes roughly 5-6 real seconds.
-     */
+    /* -------------------- DAY / NIGHT CYCLE (GRADUAL) -------------------- */
     const NIGHT_TRANSITION_SPEED = 0.015;
     let nightAmount = 0;
     function nightTarget() { return (Math.floor(score / 100) % 2 === 1) ? 1 : 0; }
@@ -976,7 +904,6 @@
       g.addColorStop(0.6, lerpHex('#70c5ce', '#1a2247', t));
       g.addColorStop(1, lerpHex('#b6e6c9', '#33395f', t));
       q.fillStyle = g; q.fillRect(0, 0, W, H);
-      // Stars fade in as night approaches.
       if (t > 0.01) {
         for (const s of STARS) {
           const tw = 0.55 + 0.45 * Math.sin(frame * 0.04 + s.tw);
@@ -984,7 +911,6 @@
           q.beginPath(); q.arc(s.x, s.y, s.r, 0, 7); q.fill();
         }
       }
-      // Sun and moon cross-fade in place at the same spot.
       if (t < 0.99) {
         q.globalAlpha = 1 - t;
         q.fillStyle = 'rgba(255, 247, 186, 0.85)';
@@ -1037,8 +963,6 @@
       q.fillStyle = '#ded895'; q.fillRect(0, gy, W, 6);
       q.fillStyle = '#70bd3e'; q.fillRect(0, gy - 4, W, 8);
       q.fillStyle = '#4f9227';
-      // Uses the same "off" (== SPD-scaled scroll) as everything
-      // else, so grass moves in lockstep with the pipes.
       for (let i = -1; i < W / 13 + 1; i++) {
         const gx = ((i * 13 - off) % (W + 13) + W + 13) % (W + 13) - 13;
         q.beginPath(); q.moveTo(gx, gy); q.lineTo(gx + 4, gy - 6); q.lineTo(gx + 7, gy); q.fill();
@@ -1066,13 +990,12 @@
     function die() {
       if (mode !== 1) return;
       mode = 2; shake = 9;
+      // Optimistic instant update so "Best" on the Game Over screen is
+      // correct immediately, without waiting on a network round-trip.
+      // A background refreshBestFromSupabase() call (inside silentSubmit)
+      // then reconciles this with the true cross-device max shortly after.
       best = Math.max(best, score);
-      localStorage.flappyBest = best;
       sndHit(); fadeMusic();
-      // Fully automatic - no modal, no button. Fires silently in the
-      // background as long as a name has already been set (it always
-      // will be, since the one-time name modal runs before any gameplay
-      // can realistically finish).
       if (score > 0) {
         setTimeout(() => {
           if (currentName()) silentSubmit(score);
@@ -1080,26 +1003,12 @@
       }
     }
     addEventListener('keydown', (e) => {
-      // Don't hijack Space (or any key) while the player is typing their
-      // name into a modal input - otherwise a space in their name, or
-      // just pressing Space to type, would also flap/restart the game.
       if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
       if (e.code === 'Space') { e.preventDefault(); flap(); }
     });
     cv.addEventListener('mousedown', flap);
     cv.addEventListener('touchstart', (e) => { e.preventDefault(); flap(); }, { passive: false });
     function loop(now) {
-      /* -------------------- DELTA-TIME NORMALIZATION --------------------
-       * requestAnimationFrame fires at whatever refresh rate the display/
-       * browser gives us (60Hz, 90Hz, 120Hz, or throttled way down on a
-       * background/low-power tab) - NOT a fixed rate. Without this, every
-       * per-frame increment below (gravity, pipe speed, scroll, etc.) would
-       * run faster or slower depending purely on hardware. `dt` expresses
-       * elapsed real time as a multiple of one 60fps frame (~16.67ms), so
-       * at 120Hz dt~=0.5 and at 30fps dt~=2, keeping actual game speed
-       * constant everywhere. Capped at 3 to avoid big jumps after the tab
-       * was backgrounded.
-       */
       if (lastTime === null) lastTime = now;
       dt = Math.min((now - lastTime) / (1000 / 60), 3);
       lastTime = now;
