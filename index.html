@@ -384,7 +384,7 @@
       const nm = currentName();
       if (!nm) return;
       submitScoreToSupabase(nm, scoreValue).then((ok) => {
-        showToast(ok ? ('Score submitted: ' + scoreValue) : 'Could not submit score');
+        if (!ok) showToast('Could not submit score');
         // Reconcile with the true cross-device max afterward, in case
         // another device under the same name has an even higher score.
         if (ok) refreshBestFromSupabase();
